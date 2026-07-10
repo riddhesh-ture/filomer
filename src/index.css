@@ -1,0 +1,84 @@
+/*
+ * ── Marching Ants — SVG stroke-dashoffset animation ─────────────
+ *
+ * REPLACES the old .dropzone-border-* / .dropzone-marching background-image
+ * classes. Those couldn't bend around border-radius correctly; this SVG
+ * <rect rx="..."> approach follows the corner radius natively.
+ *
+ * HOW IT WORKS:
+ *   DropZone.jsx renders an absolutely-positioned <svg><rect> inside the
+ *   Paper. The rect's `rx` matches the Paper's corner radius, and its
+ *   stroke is a dashed gradient line. CSS animates `stroke-dashoffset`
+ *   to shift the dash pattern, producing the marching effect.
+ *
+ * DASH SIZING (set on the <rect strokeDasharray="10 8"> in DropZone.jsx):
+ *   "10 8" = 10px dash, 8px gap
+ *   → Longer dashes:  raise the first number (e.g. "14 8")
+ *   → Wider gaps:     raise the second number (e.g. "10 14")
+ *   → Thicker border: raise strokeWidth on the <rect>
+ *
+ * MARCH SPEED:
+ *   animation-duration below (currently 0.6s).
+ *   Keyframe shift must equal exactly one dash+gap period (10 + 8 = 18)
+ *   for the loop to be seamless — if you change strokeDasharray, update
+ *   the -18 below to match.
+ * ────────────────────────────────────────────────────────────────── */
+
+.dropzone-ants-rect {
+  opacity: 0.45;
+  /* Animation always runs but starts paused — toggling play-state avoids
+     the jarring reset that happens when adding/removing the animation rule. */
+  animation: marchDash 0.6s linear infinite;
+  animation-play-state: paused;
+  transition: opacity 0.25s ease, filter 0.25s ease;
+}
+
+.dropzone-ants-rect.marching {
+  opacity: 1;
+  animation-play-state: running;
+  filter:
+    drop-shadow(0 0 5px rgba(59, 130, 246, 0.55))
+    drop-shadow(0 0 5px rgba(16, 185, 129, 0.55));
+}
+
+/* SVG <rect> paths go clockwise starting at the top-left corner.
+   Animating stroke-dashoffset from a higher value to a lower value
+   (negative shift) moves the dashes FORWARD along the clockwise path.
+   --seam-offset:  initial offset that hides the path join in a gap.
+   --march-target: seam-offset minus one full period → exactly one
+                   cycle per iteration for a seamless clockwise loop. */
+@keyframes marchDash {
+  from { stroke-dashoffset: var(--seam-offset, 0); }
+  to   { stroke-dashoffset: var(--march-target, -18); }
+}
+
+/* ── NavPill comet sweep ───────────────────────────────────────
+ * Solid arc (no dashes) sweeps clockwise continuously.
+ * strokeLinecap=round on the rect gives soft comet head/tail ends.
+ * Glow = double drop-shadow: tight core + diffuse halo.
+ * dashoffset -1000 = exactly one full perimeter loop (pathLength=1000).
+ * ─────────────────────────────────────────────────────────────── */
+.pill-comet {
+  opacity: 0.90;
+  /* 1 clean revolution — stops where it started. key={value} in React
+     remounts this element on tab switch, replaying the animation fresh. */
+  animation: pillCometSweep 2.2s linear 1 forwards;
+}
+
+.pill-comet--convert {
+  filter:
+    drop-shadow(0 0 3px rgba(59, 130, 246, 0.90))
+    drop-shadow(0 0 7px rgba(59, 130, 246, 0.45));
+}
+
+.pill-comet--compress {
+  filter:
+    drop-shadow(0 0 3px rgba(16, 185, 129, 0.90))
+    drop-shadow(0 0 7px rgba(16, 185, 129, 0.45));
+}
+
+@keyframes pillCometSweep {
+  0%   { stroke-dashoffset: 0; opacity: 0.90; }
+  80%  { opacity: 0.90; }
+  100% { stroke-dashoffset: -1000; opacity: 0; }
+}
