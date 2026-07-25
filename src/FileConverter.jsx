@@ -1,36 +1,38 @@
-// FileConverter.jsx — iLoveIMG-style 2-column layout
+// FileConverter.jsx — Clean, no-popup converter with auto-download
 // Left: thumbnail grid  |  Right: global options panel
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import Grid from '@mui/material/Grid'
 import Paper from '@mui/material/Paper'
 import Chip from '@mui/material/Chip'
-import { Zap, Shield, Smartphone, Globe } from 'lucide-react'
+import { Zap, Smartphone, Globe, CloudOff } from 'lucide-react'
 import {
   convertFile,
-  NEEDS_ENGINE,
   getCategory, getDefaultOutput,
-  loadFFmpeg, isFFmpegReady,
+  MAX_FILE_SIZE, needsHeavyEngine,
+  ACCEPT_STRING,
 } from './conversionEngine.js'
-import { useInstallPrompt, useFirstRun } from './hooks/usePWA.js'
+import { useInstallPrompt } from './hooks/usePWA.js'
 import { useToasts } from './components/Toast.jsx'
 import Layout from './components/Layout.jsx'
 import DropZone from './components/DropZone.jsx'
 import FileCard from './components/FileCard.jsx'
 import OptionsPanel from './components/OptionsPanel.jsx'
-import EngineBanner from './components/EngineBanner.jsx'
-import FirstRunModal from './components/FirstRunModal.jsx'
 
 function getOutputExt(fmt) { return fmt.toLowerCase() }
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1048576).toFixed(1)} MB`
+}
 
 export default function FileConverter() {
   const [files, setFiles] = useState([])
   const [isDragging, setIsDragging] = useState(false)
   const [isDropHovered, setIsDropHovered] = useState(false)
-  const [engineState, setEngineState] = useState('idle')
-  const [engineProgress, setEngineProgress] = useState(0)
   const [isRunning, setIsRunning] = useState(false)
 
   // Global format/quality/resize state
@@ -42,9 +44,6 @@ export default function FileConverter() {
 
   const { toasts, addToast } = useToasts()
   const { isInstallable, isInstalled, install } = useInstallPrompt()
-  const { isFirstRun, engineCached, dismiss: dismissFirst } = useFirstRun()
-
-  useEffect(() => { if (isFFmpegReady()) setEngineState('ready') }, [])
 
   // When format changes, reset ready files back to idle
   const handleFormatChange = (fmt) => {
@@ -67,11 +66,40 @@ export default function FileConverter() {
     setLockedCategory(prev => {
       const activeCat = prev || firstCat
 
-      const accepted = arr.filter(file => getCategory(file.name) === activeCat)
-      const rejected = arr.length - accepted.length
+      // Filter by category, support, and size
+      const accepted = []
+      let catRejected = 0
+      let sizeRejected = 0
+      const unsupportedNames = []
 
-      if (rejected > 0) {
-        addToast(`${rejected} file(s) skipped — only ${activeCat} files accepted`, 'warning')
+      for (const file of arr) {
+        const fileCat = getCategory(file.name)
+        if (fileCat === 'unknown') {
+          unsupportedNames.push(file.name)
+          continue
+        }
+        if (fileCat !== activeCat) {
+          catRejected++
+          continue
+        }
+        if (file.size > MAX_FILE_SIZE) {
+          sizeRejected++
+          continue
+        }
+        accepted.push(file)
+      }
+
+      if (unsupportedNames.length > 0) {
+        const names = unsupportedNames.length <= 3
+          ? unsupportedNames.join(', ')
+          : `${unsupportedNames.slice(0, 2).join(', ')} +${unsupportedNames.length - 2} more`
+        addToast(`Unsupported format: ${names}`, 'error')
+      }
+      if (catRejected > 0) {
+        addToast(`${catRejected} file(s) skipped — only ${activeCat} files accepted`, 'warning')
+      }
+      if (sizeRejected > 0) {
+        addToast(`${sizeRejected} file(s) skipped — exceeds ${formatSize(MAX_FILE_SIZE)} limit`, 'warning')
       }
 
       if (accepted.length === 0) return prev
@@ -82,7 +110,7 @@ export default function FileConverter() {
           id: Math.random().toString(36).slice(2),
           file, category: cat,
           status: 'idle', progress: 0, blob: null,
-          needsEngine: NEEDS_ENGINE.has(cat),
+          isHeavy: needsHeavyEngine(cat),
         }
       })
 
@@ -110,37 +138,42 @@ export default function FileConverter() {
     setLockedCategory(null)
   }
 
-  // Engine
-  const handleInstallEngine = async () => {
-    if (engineState === 'loading' || engineState === 'ready') return
-    setEngineState('loading'); setEngineProgress(0)
-    try {
-      await loadFFmpeg(pct => setEngineProgress(pct))
-      setEngineState('ready')
-      setFiles(p => p.map(f => f.needsEngine ? { ...f, needsEngine: false } : f))
-      addToast('Engine ready — audio, video & PDF unlocked!', 'success')
-    } catch {
-      setEngineState('error')
-      addToast('Engine load failed. Check your connection.', 'error')
-    }
+  // Download helper
+  const downloadFile = (item) => {
+    if (!item.blob) return
+    const url = URL.createObjectURL(item.blob)
+    const a = document.createElement('a')
+    const base = item.file.name.replace(/\.[^.]+$/, '')
+    a.href = url
+    a.download = `${base}.${getOutputExt(item.outputFormat || outputFormat)}`
+    a.click(); URL.revokeObjectURL(url)
   }
 
-  // Convert all — uses global format, quality, resize
+  // Convert all — auto-downloads each file when done
   const convertAll = async () => {
-    const queue = files.filter(f => f.status === 'idle' && !f.needsEngine)
+    const queue = files.filter(f => f.status === 'idle')
     if (!queue.length) return
     setIsRunning(true)
+
     for (const item of queue) {
-      patchFile(item.id, { status: 'converting', progress: 0 })
+      // For heavy files (video/audio), show "preparing" while ffmpeg loads
+      patchFile(item.id, {
+        status: item.isHeavy ? 'preparing' : 'converting',
+        progress: 0,
+      })
       try {
         const blob = await convertFile(item.file, outputFormat, {
           quality,
           resizeW: resizeW ? Number(resizeW) : undefined,
           resizeH: resizeH ? Number(resizeH) : undefined,
-          onProgress: pct => patchFile(item.id, { progress: pct }),
+          onProgress: pct => patchFile(item.id, { status: 'converting', progress: pct }),
         })
+        const doneItem = { ...item, status: 'done', progress: 100, blob, outputFormat }
         patchFile(item.id, { status: 'done', progress: 100, blob, outputFormat })
         addToast(`${item.file.name} converted ✓`, 'success')
+
+        // Auto-download immediately
+        downloadFile(doneItem)
       } catch (err) {
         console.error(err)
         patchFile(item.id, { status: 'error' })
@@ -172,26 +205,15 @@ export default function FileConverter() {
     addToast(`${done.length} files zipped ✓`, 'success')
   }
 
-  const downloadFile = item => {
-    if (!item.blob) return
-    const url = URL.createObjectURL(item.blob)
-    const a = document.createElement('a')
-    const base = item.file.name.replace(/\.[^.]+$/, '')
-    a.href = url
-    a.download = `${base}.${getOutputExt(item.outputFormat || outputFormat)}`
-    a.click(); URL.revokeObjectURL(url)
-  }
-
   // Derived
-  const engineFiles = files.filter(f => f.needsEngine).length
-  const readyCount  = files.filter(f => f.status === 'idle' && !f.needsEngine).length
+  const readyCount  = files.filter(f => f.status === 'idle').length
   const doneCount   = files.filter(f => f.status === 'done').length
 
   const features = [
-    { Icon: Shield,     color: '#2563EB', label: 'Zero uploads',   desc: 'Never touches a server'       },
-    { Icon: Zap,        color: '#06B6D4', label: 'WebAssembly',    desc: 'ffmpeg compiled for browser'  },
-    { Icon: Smartphone, color: '#A855F7', label: 'Works on mobile',desc: 'No app install needed'        },
-    { Icon: Globe,      color: '#10B981', label: 'Works offline',  desc: 'After first engine load'      },
+    { Icon: Zap,        color: '#06B6D4', label: 'Instant',         desc: 'Images convert in milliseconds' },
+    { Icon: CloudOff,   color: '#2563EB', label: '100% local',      desc: 'Files never leave your device'  },
+    { Icon: Smartphone, color: '#A855F7', label: 'Works on mobile', desc: 'No app install needed'          },
+    { Icon: Globe,      color: '#10B981', label: 'Works offline',   desc: 'Install as app for offline use' },
   ]
 
   const hasFiles = files.length > 0
@@ -200,23 +222,10 @@ export default function FileConverter() {
   return (
     <Layout
       toasts={toasts}
-      engineState={engineState}
-      engineProgress={engineProgress}
       isInstallable={isInstallable}
       isInstalled={isInstalled}
       onInstall={async () => { const ok = await install(); if (ok) addToast('DevSuite installed! 🎉', 'success') }}
     >
-      {/* First Run Modal */}
-      {isFirstRun === true && (
-        <FirstRunModal
-          engineCached={engineCached}
-          onComplete={({ engineInstalled }) => {
-            if (engineInstalled) setEngineState('ready')
-            dismissFirst()
-          }}
-        />
-      )}
-
       {/* ── Compact hero (empty state only) ─────────── */}
       {!hasFiles && (
         <Box
@@ -263,21 +272,12 @@ export default function FileConverter() {
           fileCount={files.length}
           doneCount={doneCount}
           dropLabel={lockedCategory ? `Drop more ${lockedCategory} files` : 'Drop any files here'}
-          dropSubtext="Images · Videos · Audio · PDFs — 30+ formats supported"
+          dropSubtext={`Images · Videos · Audio · PDFs — 30+ formats · ${formatSize(MAX_FILE_SIZE)} max`}
           browseSubtext="or drag and drop"
           onHoverChange={setIsDropHovered}
+          acceptTypes={ACCEPT_STRING}
         />
       </Box>
-
-      {/* ── Engine banner ──────────────────────────────────── */}
-      {(engineFiles > 0 || engineState !== 'idle') && (
-        <EngineBanner
-          engineState={engineState}
-          engineProgress={engineProgress}
-          engineFiles={engineFiles}
-          onInstall={handleInstallEngine}
-        />
-      )}
 
       {/* ── Main content: 2-column when files loaded ──────── */}
       {hasFiles ? (
@@ -316,6 +316,9 @@ export default function FileConverter() {
               onDownloadAll={handleDownloadAll}
               onClear={clearAll}
               totalCount={files.length}
+              isInstallable={isInstallable}
+              isInstalled={isInstalled}
+              onInstall={install}
             />
           </Grid>
         </Grid>

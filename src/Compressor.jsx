@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════
-//  DevSuite — Compressor.jsx (MUI v9 overhaul)
+//  DevSuite — Compressor.jsx (MUI v9 — no popups, auto-download)
 //
 //  Layout restructured to match FileConverter:
 //  Hero → DropZone (main component) → Target Panel → Features
@@ -18,6 +18,7 @@ import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import { Target, RefreshCw, Download, Crosshair, Lock, Zap, Ruler } from 'lucide-react'
 import { compressToTarget, getCategory } from './compressionEngine.js'
+import { MAX_FILE_SIZE } from './conversionEngine.js'
 import { useInstallPrompt } from './hooks/usePWA.js'
 import { useToasts } from './components/Toast.jsx'
 import Layout from './components/Layout.jsx'
@@ -40,8 +41,6 @@ const MODES = [
   { id: 'aggressive', label: 'Aggressive', desc: 'Maximum compression, lowest quality' },
 ]
 
-const ENGINE_CATS = new Set(['audio', 'video', 'pdf'])
-
 // ─── Feature cards (icons, matching converter style) ──────────
 const FEATURES = [
   { Icon: Crosshair, color: '#10B981', label: 'Binary search', desc: 'Finds exact quality to hit target' },
@@ -49,6 +48,12 @@ const FEATURES = [
   { Icon: Zap,       color: '#06B6D4', label: 'All file types', desc: 'Image, video, audio, PDF' },
   { Icon: Ruler,     color: '#A855F7', label: 'Custom limits', desc: 'Set any size you need' },
 ]
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1048576).toFixed(1)} MB`
+}
 
 // ─── MAIN ─────────────────────────────────────────────────────
 export default function Compressor() {
@@ -72,7 +77,23 @@ export default function Compressor() {
     setFiles(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f))
 
   const addFiles = useCallback(list => {
-    const entries = Array.from(list).map(file => {
+    const arr = Array.from(list)
+    const accepted = []
+    let sizeRejected = 0
+
+    for (const file of arr) {
+      if (file.size > MAX_FILE_SIZE) {
+        sizeRejected++
+        continue
+      }
+      accepted.push(file)
+    }
+
+    if (sizeRejected > 0) {
+      addToast(`${sizeRejected} file(s) skipped — exceeds ${formatSize(MAX_FILE_SIZE)} limit`, 'warning')
+    }
+
+    const entries = accepted.map(file => {
       const cat = getCategory(file)
       return {
         id: Math.random().toString(36).slice(2),
@@ -85,16 +106,31 @@ export default function Compressor() {
         blob: null,
         note: undefined,
         warning: undefined,
-        needsEngine: ENGINE_CATS.has(cat),
       }
     })
     if (entries.length > 0) setFiles(prev => [...prev, ...entries])
-  }, [effectiveTargetBytes])
+  }, [effectiveTargetBytes, addToast])
 
   const removeFile = id => setFiles(prev => prev.filter(f => f.id !== id))
   const clearAll = () => setFiles([])
 
-  // ── compress ────────────────────────────────────────────────
+  // ── download helper ─────────────────────────────────────────
+  const downloadFile = item => {
+    if (!item.blob) return
+    const url = URL.createObjectURL(item.blob)
+    const a = document.createElement('a')
+    const base = item.file.name.replace(/\.[^.]+$/, '')
+    const ext = item.category === 'image' ? 'webp'
+      : item.category === 'audio' ? 'mp3'
+        : item.category === 'video' ? 'mp4'
+          : item.category === 'pdf' ? 'pdf'
+            : item.file.name.split('.').pop()
+    a.href = url
+    a.download = `${base}_compressed.${ext}`
+    a.click(); URL.revokeObjectURL(url)
+  }
+
+  // ── compress — auto-downloads each file ─────────────────────
   const compressAll = async () => {
     if (isRunning) return
     setIsRunning(true)
@@ -109,6 +145,15 @@ export default function Compressor() {
           mode,
           pct => patchFile(item.id, { progress: pct }),
         )
+        const doneItem = {
+          ...item,
+          status: 'done',
+          progress: 100,
+          blob: result.blob,
+          finalSize: result.finalSize,
+          note: result.note,
+          warning: result.warning,
+        }
         patchFile(item.id, {
           status: 'done',
           progress: 100,
@@ -119,28 +164,15 @@ export default function Compressor() {
         })
         if (!result.warning) addToast(`${item.file.name} compressed ✓`, 'success')
         else addToast(`${item.file.name} — ${result.warning}`, 'warn')
+
+        // Auto-download immediately
+        downloadFile(doneItem)
       } catch (err) {
         patchFile(item.id, { status: 'error' })
         addToast(`Failed: ${item.file.name}`, 'error')
       }
     }
     setIsRunning(false)
-  }
-
-  // ── download helpers ────────────────────────────────────────
-  const downloadFile = item => {
-    if (!item.blob) return
-    const url = URL.createObjectURL(item.blob)
-    const a = document.createElement('a')
-    const base = item.file.name.replace(/\.[^.]+$/, '')
-    const ext = item.category === 'image' ? 'webp'
-      : item.category === 'audio' ? 'mp3'
-        : item.category === 'video' ? 'mp4'
-          : item.category === 'pdf' ? 'pdf'
-            : item.file.name.split('.').pop()
-    a.href = url
-    a.download = `${base}_compressed.${ext}`
-    a.click(); URL.revokeObjectURL(url)
   }
 
   const downloadAll = () =>
@@ -207,7 +239,7 @@ export default function Compressor() {
           variant="green"
           dropLabel={isDragging ? `Drop to compress to ${effectiveTargetMB} MB` : 'Drop files to compress'}
           dropSubtext={
-            <>Target: <strong style={{ color: '#10B981' }}>{effectiveTargetMB} MB</strong> · Mode: <strong>{mode}</strong></>
+            <>Target: <strong style={{ color: '#10B981' }}>{effectiveTargetMB} MB</strong> · Mode: <strong>{mode}</strong> · {formatSize(MAX_FILE_SIZE)} max</>
           }
           browseSubtext="or drag and drop"
           onHoverChange={setIsDropHovered}
@@ -355,7 +387,7 @@ export default function Compressor() {
                   min: 0.1,
                   max: 500,
                   step: 0.5,
-                }
+                },
               }}
             />
             <Typography variant="caption" color="text.secondary">
@@ -430,6 +462,9 @@ export default function Compressor() {
           onConvert={compressAll}
           onDownloadAll={downloadAll}
           onClear={clearAll}
+          isInstallable={isInstallable}
+          isInstalled={isInstalled}
+          onInstall={install}
         />
       )}
 

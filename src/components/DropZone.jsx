@@ -24,6 +24,7 @@ export default function DropZone({
   browseSubtext,
   infoChips,
   onHoverChange,
+  acceptTypes, // optional accept string for <input type="file">
 }) {
   const inputRef = useRef(null)
   const paperRef = useRef(null)
@@ -228,7 +229,7 @@ export default function DropZone({
         )}
       </Paper>
 
-      <input ref={inputRef} type="file" multiple style={{ display: 'none' }} onChange={handleChange} />
+      <input ref={inputRef} type="file" multiple accept={acceptTypes} style={{ display: 'none' }} onChange={handleChange} />
     </>
   )
 }

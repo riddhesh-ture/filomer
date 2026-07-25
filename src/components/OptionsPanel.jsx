@@ -12,7 +12,8 @@ import Collapse from '@mui/material/Collapse'
 import TextField from '@mui/material/TextField'
 import Divider from '@mui/material/Divider'
 import CircularProgress from '@mui/material/CircularProgress'
-import { Zap, X, Download, ChevronDown, ChevronUp, Settings2 } from 'lucide-react'
+import Tooltip from '@mui/material/Tooltip'
+import { Zap, X, Download, ChevronDown, ChevronUp, Settings2, MonitorDown, Check } from 'lucide-react'
 import { FORMAT_OPTIONS } from '../conversionEngine.js'
 
 export default function OptionsPanel({
@@ -31,6 +32,9 @@ export default function OptionsPanel({
   onDownloadAll,
   onClear,
   totalCount = 0,
+  isInstallable = false,
+  isInstalled = false,
+  onInstall,
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
@@ -251,6 +255,54 @@ export default function OptionsPanel({
           Clear all
         </Button>
       </Stack>
+
+      {/* ── PWA Install ─────────────────────────────── */}
+      {isInstallable && !isInstalled && (
+        <>
+          <Divider />
+          <Tooltip title="Install as app — works 100% offline, gets a shortcut">
+            <Button
+              variant="outlined"
+              fullWidth
+              startIcon={<MonitorDown size={15} />}
+              onClick={onInstall}
+              sx={{
+                py: 1,
+                borderRadius: 2,
+                fontWeight: 600,
+                borderColor: '#A855F7',
+                color: '#A855F7',
+                '&:hover': {
+                  borderColor: '#9333EA',
+                  bgcolor: 'rgba(168,85,247,0.06)',
+                },
+              }}
+            >
+              Install App
+            </Button>
+          </Tooltip>
+        </>
+      )}
+      {isInstalled && (
+        <>
+          <Divider />
+          <Button
+            variant="text"
+            fullWidth
+            disabled
+            startIcon={<Check size={14} />}
+            sx={{
+              py: 0.75,
+              borderRadius: 2,
+              fontSize: '0.8rem',
+              color: 'success.main',
+              '&.Mui-disabled': { color: 'success.main', opacity: 0.7 },
+            }}
+          >
+            Installed ✓
+          </Button>
+        </>
+      )}
     </Paper>
   )
 }

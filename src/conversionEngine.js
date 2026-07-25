@@ -6,13 +6,18 @@
 //   SVG     → PNG JPG WEBP PDF                    (Canvas API)
 //   HEIC    → JPG PNG WEBP                        (heic2any)
 //   PDF     → PNG JPG WEBP ZIP                    (pdfjs + pdf-lib)
-//   Video   → MP4 WEBM AVI MOV GIF MP3 WAV AAC   (ffmpeg.wasm)
-//   Audio   → MP3 WAV OGG AAC FLAC M4A            (ffmpeg.wasm)
+//   Video   → MP4 WEBM AVI MOV GIF MP3 WAV AAC   (ffmpeg.wasm — auto-loaded)
+//   Audio   → MP3 WAV OGG AAC FLAC M4A            (ffmpeg.wasm — auto-loaded)
 //  Special:
 //   Images[] → single PDF                         (pdf-lib)
 //   PDFs[]  → merged PDF                          (pdf-lib)
 //   Any[]   → ZIP bundle                          (jszip)
+//
+//  ffmpeg loads silently on demand — no popups, no banners.
 // ══════════════════════════════════════════════════════════════
+
+// ─── FILE SIZE LIMIT ──────────────────────────────────────────
+export const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB
 
 // ─── FORMAT CATEGORIES ───────────────────────────────────────
 export const FILE_CATEGORIES = {
@@ -23,6 +28,17 @@ export const FILE_CATEGORIES = {
   video: ['mp4','mkv','mov','avi','webm','flv','3gp','ts','wmv','m4v','ogv'],
   audio: ['mp3','wav','ogg','aac','flac','m4a','opus','wma','aiff','aif'],
 }
+
+/** Flat set of every supported extension (lowercase, no dot) */
+export const SUPPORTED_EXTENSIONS = new Set(
+  Object.values(FILE_CATEGORIES).flat()
+)
+
+/** Pre-built `accept` attribute for <input type="file"> — only shows supported files in the picker */
+export const ACCEPT_STRING = Object.values(FILE_CATEGORIES)
+  .flat()
+  .map(e => `.${e}`)
+  .join(',')
 
 export const FORMAT_OPTIONS = {
   image: ['PNG','JPG','WEBP','GIF','BMP','AVIF','ICO','PDF'],
@@ -38,8 +54,8 @@ export const DEFAULT_OUTPUT = {
   pdf: 'PNG', video: 'MP4', audio: 'MP3',
 }
 
-// Only video/audio actually need ffmpeg. HEIC uses heic2any, PDF uses pdfjs.
-export const NEEDS_ENGINE = new Set(['video', 'audio'])
+// Categories that require ffmpeg (loaded silently on demand)
+const HEAVY_CATEGORIES = new Set(['video', 'audio'])
 
 export function getCategory(filename) {
   const e = filename.split('.').pop().toLowerCase()
@@ -51,6 +67,11 @@ export function getCategory(filename) {
 
 export function getDefaultOutput(filename) {
   return DEFAULT_OUTPUT[getCategory(filename)] || 'PDF'
+}
+
+/** Returns true if this category needs ffmpeg (will be auto-loaded) */
+export function needsHeavyEngine(category) {
+  return HEAVY_CATEGORIES.has(category)
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────
@@ -80,28 +101,34 @@ const FFMPEG_PRESETS = {
   MOV:  ['-c:v','libx264','-crf','20','-c:a','aac','-movflags','faststart'],
 }
 
-// ─── FFMPEG SINGLETON ─────────────────────────────────────────
-let _ff = null, _ffReady = false
+// ─── FFMPEG SINGLETON — loads silently on demand ──────────────
+let _ff = null, _ffReady = false, _ffLoading = null
 
-export async function loadFFmpeg(onProgress) {
-  if (_ffReady) return _ff
-  const { FFmpeg }    = await import('@ffmpeg/ffmpeg')
-  const { toBlobURL } = await import('@ffmpeg/util')
-  _ff = new FFmpeg()
-  _ff.on('progress', ({ progress: p }) => onProgress?.(Math.min(99, Math.round(p * 100))))
-  await _ff.load({
-    coreURL: await toBlobURL(FFMPEG_CORE, 'text/javascript'),
-    wasmURL: await toBlobURL(FFMPEG_WASM, 'application/wasm'),
-  })
-  _ffReady = true
-  return _ff
-}
-
-export const isFFmpegReady = () => _ffReady
-
+/**
+ * Silently load ffmpeg on demand. No popup, no banner.
+ * Multiple callers get the same promise (deduped).
+ */
 async function getFF(onProgress) {
   if (_ffReady) return _ff
-  return loadFFmpeg(onProgress)
+  if (_ffLoading) {
+    // Already loading from another call — wait for it
+    await _ffLoading
+    return _ff
+  }
+  _ffLoading = (async () => {
+    const { FFmpeg }    = await import('@ffmpeg/ffmpeg')
+    const { toBlobURL } = await import('@ffmpeg/util')
+    _ff = new FFmpeg()
+    _ff.on('progress', ({ progress: p }) => onProgress?.(Math.min(99, Math.round(p * 100))))
+    await _ff.load({
+      coreURL: await toBlobURL(FFMPEG_CORE, 'text/javascript'),
+      wasmURL: await toBlobURL(FFMPEG_WASM, 'application/wasm'),
+    })
+    _ffReady = true
+  })()
+  await _ffLoading
+  _ffLoading = null
+  return _ff
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────
@@ -359,7 +386,7 @@ export async function pdfToZip(file, format, onProgress) {
   return zipBlob
 }
 
-// ─── VIDEO / AUDIO (ffmpeg) ──────────────────────────────────
+// ─── VIDEO / AUDIO (ffmpeg — auto-loaded silently) ───────────
 export async function convertAV(file, format, onProgress) {
   const ff = await getFF(onProgress)
   const { fetchFile } = await import('@ffmpeg/util')

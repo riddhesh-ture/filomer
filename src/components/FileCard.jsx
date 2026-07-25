@@ -1,4 +1,4 @@
-﻿// FileCard.jsx — compact thumbnail card (iLoveIMG style)
+// FileCard.jsx — compact thumbnail card with preparing/converting/done states
 import { useState, useEffect } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
@@ -6,7 +6,7 @@ import Chip from '@mui/material/Chip'
 import Tooltip from '@mui/material/Tooltip'
 import IconButton from '@mui/material/IconButton'
 import CircularProgress from '@mui/material/CircularProgress'
-import { X, Check, AlertCircle, Image as ImageIcon, Film, Music, FileText, Download } from 'lucide-react'
+import { X, Check, AlertCircle, Image as ImageIcon, Film, Music, FileText, Download, Loader } from 'lucide-react'
 import { categoryColors } from '../theme.js'
 
 // Category config
@@ -35,8 +35,8 @@ export default function FileCard({ item, onRemove, onDownload, index = 0 }) {
   const config = CAT_CONFIG[cat] || CAT_CONFIG.unknown
   const isDone = item.status === 'done'
   const isConv = item.status === 'converting'
+  const isPrep = item.status === 'preparing'
   const isErr  = item.status === 'error'
-  const locked = item.needsEngine
 
   useEffect(() => {
     if (!['image', 'svg', 'heic'].includes(cat)) return
@@ -116,6 +116,16 @@ export default function FileCard({ item, onRemove, onDownload, index = 0 }) {
           </Box>
         )}
 
+        {/* Preparing (loading ffmpeg silently) */}
+        {isPrep && (
+          <Box sx={{ position: 'absolute', inset: 0, bgcolor: 'rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.75 }}>
+            <Loader size={28} color="#93C5FD" style={{ animation: 'spin 1.5s linear infinite' }} />
+            <Typography variant="caption" sx={{ color: '#93C5FD', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.6rem' }}>
+              Preparing…
+            </Typography>
+          </Box>
+        )}
+
         {/* Converting */}
         {isConv && (
           <Box sx={{ position: 'absolute', inset: 0, bgcolor: 'rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.75 }}>
@@ -146,15 +156,6 @@ export default function FileCard({ item, onRemove, onDownload, index = 0 }) {
         {isErr && (
           <Box sx={{ position: 'absolute', inset: 0, bgcolor: 'rgba(239,68,68,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <AlertCircle size={28} color="#EF4444" />
-          </Box>
-        )}
-
-        {/* Locked */}
-        {locked && !isConv && !isDone && (
-          <Box sx={{ position: 'absolute', inset: 0, bgcolor: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Typography variant="caption" sx={{ color: '#fff', fontWeight: 700, fontSize: '0.6rem', textAlign: 'center', px: 1, lineHeight: 1.4 }}>
-              🔒 Engine needed
-            </Typography>
           </Box>
         )}
 

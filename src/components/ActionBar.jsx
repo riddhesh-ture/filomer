@@ -1,9 +1,10 @@
-// ActionBar.jsx — MUI floating batch action bar
+// ActionBar.jsx — MUI floating batch action bar with PWA Install button
 import Paper from '@mui/material/Paper'
 import Button from '@mui/material/Button'
 import Stack from '@mui/material/Stack'
 import Zoom from '@mui/material/Zoom'
-import { Zap, Download, X, Target, RefreshCw } from 'lucide-react'
+import Tooltip from '@mui/material/Tooltip'
+import { Zap, Download, X, Target, RefreshCw, MonitorDown, Check } from 'lucide-react'
 
 export default function ActionBar({
   readyCount = 0,
@@ -18,10 +19,13 @@ export default function ActionBar({
   onMergePDFs,
   onDownloadAll,
   onClear,
+  isInstallable = false,
+  isInstalled = false,
+  onInstall,
 }) {
   const isCompressor = variant === 'compressor'
   const hasActions = readyCount > 0 || doneCount > 0
-  if (!hasActions) return null
+  if (!hasActions && !isInstallable) return null
 
   const colorKey = isCompressor ? 'success' : 'primary'
 
@@ -133,6 +137,48 @@ export default function ActionBar({
           >
             Clear
           </Button>
+
+          {/* ── PWA Install Button — prominent in the action bar ── */}
+          {isInstallable && !isInstalled && (
+            <Tooltip title="Install as app — works 100% offline, gets a shortcut on your home screen">
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<MonitorDown size={14} />}
+                onClick={onInstall}
+                sx={{
+                  borderRadius: 99,
+                  borderColor: '#A855F7',
+                  color: '#A855F7',
+                  fontWeight: 700,
+                  '&:hover': {
+                    borderColor: '#9333EA',
+                    bgcolor: 'rgba(168,85,247,0.06)',
+                  },
+                }}
+              >
+                Install App
+              </Button>
+            </Tooltip>
+          )}
+
+          {isInstalled && (
+            <Tooltip title="App installed — works offline!">
+              <Button
+                variant="text"
+                size="small"
+                startIcon={<Check size={14} />}
+                disabled
+                sx={{
+                  borderRadius: 99,
+                  color: 'success.main',
+                  '&.Mui-disabled': { color: 'success.main', opacity: 0.8 },
+                }}
+              >
+                Installed ✓
+              </Button>
+            </Tooltip>
+          )}
         </Stack>
       </Paper>
     </Zoom>

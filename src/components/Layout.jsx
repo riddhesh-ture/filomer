@@ -11,7 +11,7 @@ import Typography from '@mui/material/Typography'
 import Container from '@mui/material/Container'
 import Tooltip from '@mui/material/Tooltip'
 import useMediaQuery from '@mui/material/useMediaQuery'
-import { Zap, Shield, MonitorDown, Sun, Moon } from 'lucide-react'
+import { Zap, MonitorDown, Sun, Moon } from 'lucide-react'
 import ToastContainer from './Toast.jsx'
 
 // ─── Dynamic colour palettes ───────────────────────────────────
@@ -302,81 +302,10 @@ function NavPills({ value, onChange, isMobile }) {
   )
 }
 
-// ── Status badge ───────────────────────────────────────────────
-function StatusBadge({ engineState, engineReady, engineProgress, pal }) {
-  const label = engineReady
-    ? 'Engine Ready'
-    : engineState === 'loading'
-      ? `Loading ${engineProgress}%`
-      : 'Local Only'
-
-  return (
-    <Tooltip title="All processing happens on your device — nothing is uploaded">
-      <Box
-        sx={{
-          display: { xs: 'none', sm: 'flex' },
-          alignItems: 'center',
-          gap: 0.75,
-          px: 1.5,
-          py: 0.5,
-          borderRadius: 99,
-          bgcolor: (t) =>
-            t.palette.mode === 'dark'
-              ? 'rgba(255,255,255,0.04)'
-              : 'rgba(0,0,0,0.03)',
-          border: '1px solid',
-          borderColor: (t) =>
-            t.palette.mode === 'dark'
-              ? 'rgba(255,255,255,0.08)'
-              : 'rgba(0,0,0,0.06)',
-          transition: 'all 0.35s ease',
-        }}
-      >
-        {/* Dot indicator — dynamic colour */}
-        <Box
-          sx={{
-            width: 6,
-            height: 6,
-            borderRadius: '50%',
-            bgcolor: engineReady ? 'success.main' : pal.main,
-            boxShadow: engineReady
-              ? '0 0 6px rgba(16,185,129,0.6)'
-              : (t) => t.palette.mode === 'dark' ? pal.dot.dark : pal.dot.light,
-            transition: 'background-color 0.35s ease, box-shadow 0.35s ease',
-            animation: engineState === 'loading'
-              ? 'pulse 1.5s ease-in-out infinite'
-              : 'none',
-            '@keyframes pulse': {
-              '0%, 100%': { opacity: 1, transform: 'scale(1)' },
-              '50%': { opacity: 0.5, transform: 'scale(0.8)' },
-            },
-          }}
-        />
-        <Shield size={11} style={{ opacity: 0.7 }} />
-        <Typography
-          variant="caption"
-          sx={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: '0.6375rem',
-            fontWeight: 500,
-            letterSpacing: '0.02em',
-            color: 'text.secondary',
-            lineHeight: 1,
-          }}
-        >
-          {label}
-        </Typography>
-      </Box>
-    </Tooltip>
-  )
-}
-
 // ── Main Layout ────────────────────────────────────────────────
 export default function Layout({
   children,
   toasts,
-  engineState = 'idle',
-  engineProgress = 0,
   isInstallable = false,
   isInstalled = false,
   onInstall,
@@ -384,7 +313,6 @@ export default function Layout({
   const location = useLocation()
   const navigate = useNavigate()
   const isMobile = useMediaQuery('(max-width:600px)')
-  const engineReady = engineState === 'ready'
 
   const tabValue = location.pathname.startsWith('/compress') ? 1 : 0
   const pal = tabValue === 0 ? PALETTES.convert : PALETTES.compress
@@ -496,7 +424,7 @@ export default function Layout({
 
             {/* Install button */}
             {isInstallable && !isInstalled && (
-              <Tooltip title="Install as desktop app">
+              <Tooltip title="Install as desktop app — works offline, gets bookmarked">
                 <Box
                   onClick={onInstall}
                   sx={{
@@ -525,14 +453,6 @@ export default function Layout({
                 </Box>
               </Tooltip>
             )}
-
-            {/* Engine status badge */}
-            <StatusBadge
-              engineState={engineState}
-              engineReady={engineReady}
-              engineProgress={engineProgress}
-              pal={pal}
-            />
 
             {/* Theme toggle */}
             <ThemeToggle pal={pal} />
