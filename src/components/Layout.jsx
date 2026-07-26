@@ -389,7 +389,7 @@ export default function Layout({
                     fontSize: '1.1rem',
                   }}
                 >
-                  Dev
+                  Filo
                   <Box
                     component="span"
                     sx={{
@@ -397,7 +397,7 @@ export default function Layout({
                       transition: 'color 0.35s ease',
                     }}
                   >
-                    Suite
+                    mer
                   </Box>
                 </Typography>
               )}

@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════
-//  DevSuite — conversionEngine.js
+//  Filomer — conversionEngine.js
 //
 //  Full format support:
 //   Images  → PNG JPG WEBP GIF BMP ICO AVIF PDF  (Canvas API)

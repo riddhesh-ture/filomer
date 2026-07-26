@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════
-//  DevSuite — Compressor.jsx (MUI v9 — no popups, auto-download)
+//  Filomer — Compressor.jsx (MUI v9 — no popups, auto-download)
 //
 //  Layout restructured to match FileConverter:
 //  Hero → DropZone (main component) → Target Panel → Features
@@ -18,7 +18,7 @@ import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import { Target, RefreshCw, Download, Crosshair, Lock, Zap, Ruler } from 'lucide-react'
 import { compressToTarget, getCategory } from './compressionEngine.js'
-import { MAX_FILE_SIZE } from './conversionEngine.js'
+import { MAX_FILE_SIZE, ACCEPT_STRING } from './conversionEngine.js'
 import { useInstallPrompt } from './hooks/usePWA.js'
 import { useToasts } from './components/Toast.jsx'
 import Layout from './components/Layout.jsx'
@@ -80,8 +80,14 @@ export default function Compressor() {
     const arr = Array.from(list)
     const accepted = []
     let sizeRejected = 0
+    const unsupportedNames = []
 
     for (const file of arr) {
+      const cat = getCategory(file)
+      if (cat === 'unknown') {
+        unsupportedNames.push(file.name)
+        continue
+      }
       if (file.size > MAX_FILE_SIZE) {
         sizeRejected++
         continue
@@ -89,6 +95,12 @@ export default function Compressor() {
       accepted.push(file)
     }
 
+    if (unsupportedNames.length > 0) {
+      const names = unsupportedNames.length <= 3
+        ? unsupportedNames.join(', ')
+        : `${unsupportedNames.slice(0, 2).join(', ')} +${unsupportedNames.length - 2} more`
+      addToast(`Unsupported format: ${names}`, 'error')
+    }
     if (sizeRejected > 0) {
       addToast(`${sizeRejected} file(s) skipped — exceeds ${formatSize(MAX_FILE_SIZE)} limit`, 'warning')
     }
@@ -189,7 +201,7 @@ export default function Compressor() {
       toasts={toasts}
       isInstallable={isInstallable}
       isInstalled={isInstalled}
-      onInstall={async () => { const ok = await install(); if (ok) addToast('DevSuite installed! 🎉', 'success') }}
+      onInstall={async () => { const ok = await install(); if (ok) addToast('Filomer installed! 🎉', 'success') }}
     >
       {/* ── Hero (matches converter layout) ──────────────────── */}
       {!hasFiles && (
@@ -223,7 +235,7 @@ export default function Compressor() {
             </Box>
           </Typography>
           <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-            Set a target size — DevSuite hits it. Govt portals, college uploads, email attachments.
+            Set a target size — Filomer hits it. Govt portals, college uploads, email attachments.
           </Typography>
         </Box>
       )}
@@ -243,6 +255,7 @@ export default function Compressor() {
           }
           browseSubtext="or drag and drop"
           onHoverChange={setIsDropHovered}
+          acceptTypes={ACCEPT_STRING}
         >
           {/* Action buttons shown in compact mode */}
           {readyCount > 0 && !isRunning && (
@@ -517,7 +530,7 @@ export default function Compressor() {
       {!hasFiles && (
         <Box sx={{ textAlign: 'center', mt: 8, mb: 2 }}>
           <Typography variant="caption" color="text.secondary">
-            DevSuite — Privacy-first file processing. No files ever leave your device.
+            Filomer — Privacy-first file processing. No files ever leave your device.
           </Typography>
         </Box>
       )}

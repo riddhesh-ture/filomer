@@ -224,7 +224,7 @@ export default function FileConverter() {
       toasts={toasts}
       isInstallable={isInstallable}
       isInstalled={isInstalled}
-      onInstall={async () => { const ok = await install(); if (ok) addToast('DevSuite installed! 🎉', 'success') }}
+      onInstall={async () => { const ok = await install(); if (ok) addToast('Filomer installed! 🎉', 'success') }}
     >
       {/* ── Compact hero (empty state only) ─────────── */}
       {!hasFiles && (
@@ -366,7 +366,7 @@ export default function FileConverter() {
 
           <Box sx={{ textAlign: 'center', mt: 8, mb: 2 }}>
             <Typography variant="caption" color="text.secondary">
-              DevSuite — Privacy-first file processing. No files ever leave your device.
+              Filomer — Privacy-first file processing. No files ever leave your device.
             </Typography>
           </Box>
         </>

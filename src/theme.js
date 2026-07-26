@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════
-//  DevSuite — MUI v9 Theme
+//  Filomer — MUI v9 Theme
 //  Light-first, premium SaaS aesthetic
 //  Uses colorSchemes + CSS variables for dark mode toggle
 // ══════════════════════════════════════════════════════════════
