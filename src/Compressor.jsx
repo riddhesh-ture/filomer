@@ -5,7 +5,7 @@
 //  Hero → DropZone (main component) → Target Panel → Features
 // ══════════════════════════════════════════════════════════════
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import Grid from '@mui/material/Grid'
@@ -16,7 +16,7 @@ import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
-import { Target, RefreshCw, Download, Crosshair, Lock, Zap, Ruler } from 'lucide-react'
+import { Target, RefreshCw, Crosshair, Lock, Zap, Ruler } from 'lucide-react'
 import { compressToTarget, getCategory } from './compressionEngine.js'
 import { MAX_FILE_SIZE, ACCEPT_STRING } from './conversionEngine.js'
 import { useInstallPrompt } from './hooks/usePWA.js'
@@ -65,6 +65,8 @@ export default function Compressor() {
   const [useCustom, setUseCustom] = useState(false)
   const [mode, setMode] = useState('smart')
   const [isRunning, setIsRunning] = useState(false)
+  // FIX-14: run-cancellation counter — increment in clearAll to stop stale downloads
+  const runIdRef = useRef(0)
 
   const { toasts, addToast } = useToasts()
   const { isInstallable, isInstalled, install } = useInstallPrompt()
@@ -124,9 +126,10 @@ export default function Compressor() {
   }, [effectiveTargetBytes, addToast])
 
   const removeFile = id => setFiles(prev => prev.filter(f => f.id !== id))
-  const clearAll = () => setFiles([])
+  // FIX-14: invalidate any in-progress compressAll loop
+  const clearAll = () => { runIdRef.current++; setFiles([]) }
 
-  // ── download helper ─────────────────────────────────────────
+  // FIX-14: delay revocation so browser has time to start the download
   const downloadFile = item => {
     if (!item.blob) return
     const url = URL.createObjectURL(item.blob)
@@ -139,24 +142,39 @@ export default function Compressor() {
             : item.file.name.split('.').pop()
     a.href = url
     a.download = `${base}_compressed.${ext}`
-    a.click(); URL.revokeObjectURL(url)
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
   }
 
-  // ── compress — auto-downloads each file ─────────────────────
+  // FIX-13: snapshot mode + target at start so mid-run changes don't affect batch
+  // FIX-14: runIdRef lets clearAll cancel the loop and stop stale downloads
   const compressAll = async () => {
     if (isRunning) return
-    setIsRunning(true)
     const queue = files.filter(f => f.status === 'idle')
+    if (!queue.length) return
+
+    // Snapshot settings at start of run
+    const snapMode  = mode
+    const snapBytes = effectiveTargetBytes
+    const runId     = ++runIdRef.current
+    setIsRunning(true)
 
     for (const item of queue) {
-      patchFile(item.id, { status: 'compressing', progress: 0, targetBytes: effectiveTargetBytes })
+      // Stop if clearAll was called
+      if (runIdRef.current !== runId) break
+
+      patchFile(item.id, { status: 'compressing', progress: 0, targetBytes: snapBytes })
       try {
         const result = await compressToTarget(
           item.file,
-          effectiveTargetBytes,
-          mode,
+          snapBytes,
+          snapMode,
           pct => patchFile(item.id, { progress: pct }),
         )
+
+        // Check again after the async await — clearAll may have fired
+        if (runIdRef.current !== runId) break
+
         const doneItem = {
           ...item,
           status: 'done',
@@ -175,26 +193,55 @@ export default function Compressor() {
           warning: result.warning,
         })
         if (!result.warning) addToast(`${item.file.name} compressed ✓`, 'success')
-        else addToast(`${item.file.name} — ${result.warning}`, 'warn')
-
-        // Auto-download immediately
+        else addToast(`${item.file.name} — ${result.warning}`, 'warning')
         downloadFile(doneItem)
       } catch (err) {
+        if (runIdRef.current !== runId) break
+        console.error(err)
         patchFile(item.id, { status: 'error' })
-        addToast(`Failed: ${item.file.name}`, 'error')
+        // FIX-12: surface actual error message
+        addToast(`Failed: ${item.file.name} — ${err.message}`, 'error')
       }
     }
     setIsRunning(false)
   }
 
-  const downloadAll = () =>
-    files.filter(f => f.status === 'done').forEach(downloadFile)
+  // FIX-18: ZIP all done files instead of firing multiple simultaneous downloads
+  // (multiple a.click() calls in quick succession often trigger popup blockers)
+  const downloadAll = async () => {
+    const done = files.filter(f => f.status === 'done' && f.blob)
+    if (!done.length) return
+    if (done.length === 1) { downloadFile(done[0]); return }
+    const JSZip  = (await import('jszip')).default
+    const zip    = new JSZip()
+    const seenNames = new Map()
+    done.forEach(item => {
+      const base = item.file.name.replace(/\.[^.]+$/, '')
+      const ext  = item.category === 'image' ? 'webp'
+        : item.category === 'audio' ? 'mp3'
+          : item.category === 'video' ? 'mp4'
+            : item.category === 'pdf' ? 'pdf'
+              : item.file.name.split('.').pop()
+      let filename = `${base}_compressed.${ext}`
+      // Deduplicate filenames (FIX-15 equivalent)
+      const count = seenNames.get(filename) || 0
+      seenNames.set(filename, count + 1)
+      if (count > 0) filename = `${base}_compressed (${count}).${ext}`
+      zip.file(filename, item.blob)
+    })
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url; a.download = 'compressed_files.zip'; a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    addToast(`${done.length} files zipped ✓`, 'success')
+  }
 
   // ── derived ─────────────────────────────────────────────────
-  const readyCount = files.filter(f => f.status === 'idle').length
-  const doneCount = files.filter(f => f.status === 'done').length
-  const hasFiles = files.length > 0
-  const isShifted = !hasFiles && (isDragging || isDropHovered)
+  const readyCount  = files.filter(f => f.status === 'idle').length
+  const doneCount   = files.filter(f => f.status === 'done').length
+  const hasFiles    = files.length > 0
+  const isShifted   = !hasFiles && (isDragging || isDropHovered)
 
   return (
     <Layout
@@ -285,7 +332,14 @@ export default function Compressor() {
               Save all ({doneCount})
             </Button>
           )}
-          <Button variant="text" size="small" onClick={clearAll} sx={{ color: 'text.secondary' }}>
+          {/* FIX-17: disable Clear while running */}
+          <Button
+            variant="text"
+            size="small"
+            onClick={clearAll}
+            disabled={isRunning}
+            sx={{ color: 'text.secondary' }}
+          >
             Clear
           </Button>
         </DropZone>
@@ -457,7 +511,7 @@ export default function Compressor() {
               <CompressCard
                 item={item}
                 index={i}
-                onRemove={() => removeFile(item.id)}
+                onRemove={isRunning ? undefined : () => removeFile(item.id)}
                 onDownload={() => downloadFile(item)}
               />
             </Grid>

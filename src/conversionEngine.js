@@ -15,6 +15,7 @@
 //
 //  ffmpeg loads silently on demand — no popups, no banners.
 // ══════════════════════════════════════════════════════════════
+import { getFFmpeg } from './utils/ffmpegLoader.js'
 
 // ─── FILE SIZE LIMIT ──────────────────────────────────────────
 export const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB
@@ -75,8 +76,6 @@ export function needsHeavyEngine(category) {
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────
-const FFMPEG_CORE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.js'
-const FFMPEG_WASM = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.wasm'
 
 const MIME = {
   PNG:'image/png', JPG:'image/jpeg', WEBP:'image/webp',
@@ -87,6 +86,11 @@ const MIME = {
   MP4:'video/mp4', WEBM:'video/webm', AVI:'video/x-msvideo',
   MOV:'video/quicktime', ZIP:'application/zip',
 }
+
+// Issue #10: PDF rendering safety limits — no page cap (local-first), but each
+// page is scaled to a sensible max width and capped at 16 MP to prevent OOM.
+const MAX_CANVAS_PIXELS = 16_000_000
+const PDF_MAX_OUT_WIDTH = { PNG: 4096, JPG: 2048, WEBP: 2048 }
 
 const FFMPEG_PRESETS = {
   MP3:  ['-c:a','libmp3lame','-q:a','2'],
@@ -101,38 +105,88 @@ const FFMPEG_PRESETS = {
   MOV:  ['-c:v','libx264','-crf','20','-c:a','aac','-movflags','faststart'],
 }
 
-// ─── FFMPEG SINGLETON — loads silently on demand ──────────────
-let _ff = null, _ffReady = false, _ffLoading = null
-
+// ─── FFMPEG SINGLETON — loads silently on demand via ffmpegLoader ─────
 /**
- * Silently load ffmpeg on demand. No popup, no banner.
+ * Silently load ffmpeg on demand. Uses CacheStorage + multi-CDN fallback.
  * Multiple callers get the same promise (deduped).
  */
-async function getFF(onProgress) {
-  if (_ffReady) return _ff
-  if (_ffLoading) {
-    // Already loading from another call — wait for it
-    await _ffLoading
-    return _ff
-  }
-  _ffLoading = (async () => {
-    const { FFmpeg }    = await import('@ffmpeg/ffmpeg')
-    const { toBlobURL } = await import('@ffmpeg/util')
-    _ff = new FFmpeg()
-    _ff.on('progress', ({ progress: p }) => onProgress?.(Math.min(99, Math.round(p * 100))))
-    await _ff.load({
-      coreURL: await toBlobURL(FFMPEG_CORE, 'text/javascript'),
-      wasmURL: await toBlobURL(FFMPEG_WASM, 'application/wasm'),
-    })
-    _ffReady = true
-  })()
-  await _ffLoading
-  _ffLoading = null
-  return _ff
+async function getFF(onProgress, onEngineProgress) {
+  return getFFmpeg({ onDownloadProgress: onEngineProgress, onProgress })
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────
 function ext(file) { return file.name.split('.').pop().toLowerCase() }
+
+// ─── ANIMATED GIF DETECTOR ────────────────────────────────────
+/**
+ * Returns true if the file is an animated GIF (more than one
+ * Graphic Control Extension block, magic: 0x21 0xF9).
+ * Reads at most the first 64 KB for efficiency.
+ */
+export async function isAnimatedGIF(file) {
+  const buffer = await file.slice(0, 65536).arrayBuffer()
+  const bytes  = new Uint8Array(buffer)
+  let gcCount  = 0
+  for (let i = 0; i < bytes.length - 1; i++) {
+    if (bytes[i] === 0x21 && bytes[i + 1] === 0xF9) {
+      if (++gcCount > 1) return true
+    }
+  }
+  return false
+}
+
+// ─── BMP ENCODER (pure JS) ────────────────────────────────────
+// Canvas.toBlob does NOT support image/bmp in any major browser — it silently
+// falls back to PNG. This minimal encoder writes a 24-bit BMP directly from
+// the canvas ImageData, producing a valid BMP that opens in every viewer.
+function canvasToBMPBlob(canvas) {
+  const ctx  = canvas.getContext('2d')
+  const idat = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const W = canvas.width, H = canvas.height
+
+  // BMP rows are padded to a 4-byte boundary and stored bottom-up.
+  const rowStride  = Math.ceil(W * 3 / 4) * 4
+  const pixelBytes = rowStride * H
+  const fileSize   = 54 + pixelBytes          // 14-byte file header + 40-byte DIB header
+
+  const buf  = new ArrayBuffer(fileSize)
+  const view = new DataView(buf)
+
+  // ── File header ──────────────────────────────────────────────
+  view.setUint16(0,  0x424D, false)            // 'BM' signature (big-endian)
+  view.setUint32(2,  fileSize,   true)         // file size
+  view.setUint32(6,  0,          true)         // reserved
+  view.setUint32(10, 54,         true)         // pixel data offset
+
+  // ── DIB header (BITMAPINFOHEADER, 40 bytes) ──────────────────
+  view.setUint32(14, 40, true)                 // header size
+  view.setInt32 (18, W,  true)                 // width
+  view.setInt32 (22, -H, true)                 // negative height → top-down
+  view.setUint16(26, 1,  true)                 // colour planes
+  view.setUint16(28, 24, true)                 // bits per pixel (RGB24)
+  view.setUint32(30, 0,  true)                 // compression (none)
+  view.setUint32(34, pixelBytes, true)         // raw image size
+  view.setInt32 (38, 2835, true)               // X pixels/metre (~72 dpi)
+  view.setInt32 (42, 2835, true)               // Y pixels/metre
+  view.setUint32(46, 0, true)                  // colours in table
+  view.setUint32(50, 0, true)                  // important colours
+
+  // ── Pixel data — RGB24, row-padded ──────────────────────────
+  const bytes = new Uint8Array(buf)
+  const src   = idat.data                      // RGBA source
+  for (let y = 0; y < H; y++) {
+    const rowOff = 54 + y * rowStride
+    for (let x = 0; x < W; x++) {
+      const si = (y * W + x) * 4
+      const di = rowOff + x * 3
+      bytes[di]     = src[si + 2]              // B
+      bytes[di + 1] = src[si + 1]              // G
+      bytes[di + 2] = src[si]                  // R
+    }
+  }
+
+  return new Blob([buf], { type: 'image/bmp' })
+}
 
 export function triggerDownload(blob, filename) {
   const url = URL.createObjectURL(blob)
@@ -154,28 +208,89 @@ function imageToBlob(file, format, quality = 0.92, targetW, targetH) {
       if (targetW && !targetH) h = Math.round(targetW / aspect)
       if (targetH && !targetW) w = Math.round(targetH * aspect)
 
+      // BUG-8/9: clamp dimensions — reject zero/negative values, cap per-side
+      // at 16 384 px and proportionally reduce if total pixel count exceeds 50 MP.
+      const MAX_DIM = 16_384
+      const MAX_PIX = 50_000_000
+      w = Math.max(1, Math.min(Math.round(w), MAX_DIM))
+      h = Math.max(1, Math.min(Math.round(h), MAX_DIM))
+      const totalPix = w * h
+      if (totalPix > MAX_PIX) {
+        const s = Math.sqrt(MAX_PIX / totalPix)
+        w = Math.max(1, Math.round(w * s))
+        h = Math.max(1, Math.round(h * s))
+      }
+
       const canvas = document.createElement('canvas')
       canvas.width = w; canvas.height = h
       const ctx = canvas.getContext('2d')
+      // BMP and JPG need an opaque white background (no alpha channel)
       if (format === 'JPG' || format === 'BMP') {
         ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h)
       }
       ctx.drawImage(img, 0, 0, w, h)
 
-      const mime = MIME[format] || 'image/png'
-      const q = ['PNG','GIF','BMP','ICO','AVIF'].includes(format) ? 1 : quality
+      URL.revokeObjectURL(url)
 
+      // Fix #2: BMP — Canvas.toBlob ignores 'image/bmp' in all browsers and
+      // silently produces PNG bytes. Use our pure-JS encoder instead.
+      if (format === 'BMP') {
+        resolve(canvasToBMPBlob(canvas))
+        return
+      }
+
+      // Fix #3: AVIF — if the browser doesn't support AVIF encoding, toBlob
+      // returns null (or a tiny broken blob). Fall back to WEBP and tag the
+      // blob so the caller can set the correct download extension.
       if (format === 'AVIF') {
         canvas.toBlob(b => {
-          URL.revokeObjectURL(url)
-          if (b && b.size > 0) { resolve(b); return }
-          canvas.toBlob(fb => { resolve(fb) }, 'image/webp', 0.85)
+          if (b && b.size > 100) { resolve(b); return }
+          // AVIF not supported — produce WEBP and signal the actual format.
+          canvas.toBlob(fb => {
+            if (fb) fb._actualExt = 'webp'
+            resolve(fb)
+          }, 'image/webp', 0.85)
         }, 'image/avif', 0.8)
         return
       }
 
+      // Fix #2: GIF — Canvas.toBlob ignores 'image/gif' in all browsers and
+      // silently produces PNG bytes. Fall back to WEBP and tag the blob so
+      // the caller sets the right extension. (True animated GIF encoding from
+      // video sources already works correctly via FFmpeg.)
+      if (format === 'GIF') {
+        canvas.toBlob(b => {
+          // Detect PNG fallback: GIF magic bytes are 47 49 46 ('GIF');
+          // PNG magic bytes start with 0x89 0x50 ('\x89PNG').
+          if (b && b.size > 0) {
+            const reader = new FileReader()
+            reader.onload = ev => {
+              const arr = new Uint8Array(ev.target.result)
+              // If the browser actually produced a GIF, use it as-is.
+              if (arr[0] === 0x47 && arr[1] === 0x49 && arr[2] === 0x46) {
+                resolve(b)
+              } else {
+                // Browser produced PNG bytes — fall back to WEBP
+                canvas.toBlob(wb => {
+                  if (wb) wb._actualExt = 'webp'
+                  resolve(wb)
+                }, 'image/webp', 0.85)
+              }
+            }
+            reader.readAsArrayBuffer(b.slice(0, 4))
+          } else {
+            canvas.toBlob(wb => {
+              if (wb) wb._actualExt = 'webp'
+              resolve(wb)
+            }, 'image/webp', 0.85)
+          }
+        }, 'image/gif')
+        return
+      }
+
+      const mime = MIME[format] || 'image/png'
+      const q = ['PNG', 'ICO'].includes(format) ? 1 : quality
       canvas.toBlob(b => {
-        URL.revokeObjectURL(url)
         b ? resolve(b) : reject(new Error('Canvas toBlob failed'))
       }, mime, q)
     }
@@ -192,30 +307,42 @@ export async function convertImage(file, format, quality = 85, resizeW, resizeH)
 }
 
 // ─── SVG → RASTER ────────────────────────────────────────────
-export async function convertSVG(file, format) {
+// Issue #8: quality and resize are now respected.
+export async function convertSVG(file, format, quality = 92, resizeW, resizeH) {
   if (format === 'PDF') return singleImageToPDF(file)
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = e => {
       const svgText = e.target.result
-      const parser = new DOMParser()
-      const doc = parser.parseFromString(svgText, 'image/svg+xml')
-      const svgEl = doc.querySelector('svg')
-      const vb = svgEl?.getAttribute('viewBox')?.split(/[\s,]/).map(Number)
-      const w = parseFloat(svgEl?.getAttribute('width'))  || (vb ? vb[2] : 800)
-      const h = parseFloat(svgEl?.getAttribute('height')) || (vb ? vb[3] : 600)
+      const parser  = new DOMParser()
+      const doc     = parser.parseFromString(svgText, 'image/svg+xml')
+      const svgEl   = doc.querySelector('svg')
+      const vb      = svgEl?.getAttribute('viewBox')?.split(/[\s,]/).map(Number)
+      const naturalW = parseFloat(svgEl?.getAttribute('width'))  || (vb ? vb[2] : 800)
+      const naturalH = parseFloat(svgEl?.getAttribute('height')) || (vb ? vb[3] : 600)
+
+      // Apply resize if requested, preserving aspect ratio when only one dim given
+      const aspect = naturalW / naturalH
+      let w = resizeW || naturalW
+      let h = resizeH || naturalH
+      if (resizeW && !resizeH) h = Math.round(resizeW / aspect)
+      if (resizeH && !resizeW) w = Math.round(resizeH * aspect)
 
       const blob = new Blob([svgText], { type:'image/svg+xml;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const img = new Image()
+      const url  = URL.createObjectURL(blob)
+      const img  = new Image()
       img.onload = () => {
         const canvas = document.createElement('canvas')
         canvas.width = Math.max(w, 1); canvas.height = Math.max(h, 1)
         const ctx = canvas.getContext('2d')
-        if (format === 'JPG') { ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height) }
+        if (format === 'JPG') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height) }
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
         const mime = MIME[format] || 'image/png'
-        canvas.toBlob(b => { URL.revokeObjectURL(url); b ? resolve(b) : reject(new Error('SVG render failed')) }, mime, 0.92)
+        const q    = format === 'PNG' ? 1 : quality / 100
+        canvas.toBlob(b => {
+          URL.revokeObjectURL(url)
+          b ? resolve(b) : reject(new Error('SVG render failed'))
+        }, mime, q)
       }
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('SVG load failed')) }
       img.src = url
@@ -225,16 +352,28 @@ export async function convertSVG(file, format) {
 }
 
 // ─── HEIC → RASTER ───────────────────────────────────────────
-export async function convertHEIC(file, format) {
+// Issue #7: quality and resize are now respected.
+export async function convertHEIC(file, format, quality = 92, resizeW, resizeH) {
   const heic2any = (await import('heic2any')).default
-  const mime = MIME[format] || 'image/jpeg'
-  const result = await heic2any({ blob: file, toType: mime, quality: 0.92 })
-  return Array.isArray(result) ? result[0] : result
+  const mime     = MIME[format] || 'image/jpeg'
+  const result   = await heic2any({ blob: file, toType: mime, quality: quality / 100 })
+  const blob     = Array.isArray(result) ? result[0] : result
+  // Apply resize by piping the decoded blob through imageToBlob at target dims
+  if (resizeW || resizeH) {
+    return imageToBlob(blob, format, quality / 100, resizeW, resizeH)
+  }
+  return blob
 }
 
 // ─── ICO GENERATION ──────────────────────────────────────────
-export async function createICO(file) {
-  const SIZES = [16, 32, 48, 64]
+// BUG-E: accepts an optional resizeW to produce a custom-size ICO (e.g. 256px
+// for app icons) instead of always generating the fixed 16/32/48/64 set.
+export async function createICO(file, resizeW) {
+  // If the user specified a target width, use only that size; otherwise the
+  // standard favicon set. Clamp to the ICO maximum of 256 px.
+  const SIZES = resizeW
+    ? [Math.max(1, Math.min(256, Math.round(resizeW)))]
+    : [16, 32, 48, 64]
   const pngData = []
 
   for (const size of SIZES) {
@@ -292,6 +431,8 @@ export async function singleImageToPDF(file) {
 }
 
 // ─── MULTIPLE IMAGES → SINGLE PDF ────────────────────────────
+// BUG-A: HEIC files cannot be drawn to a canvas directly — they must be
+// decoded through heic2any before being embedded in the PDF.
 export async function imagesToPDF(files, onProgress) {
   const { PDFDocument } = await import('pdf-lib')
   const doc = await PDFDocument.create()
@@ -301,8 +442,15 @@ export async function imagesToPDF(files, onProgress) {
     let imgBytes, imgType
     if (['jpg','jpeg'].includes(fileExt)) {
       imgBytes = new Uint8Array(await file.arrayBuffer()); imgType = 'jpg'
+    } else if (['heic','heif'].includes(fileExt)) {
+      // Decode HEIC via heic2any; embed result as JPEG
+      const heic2any = (await import('heic2any')).default
+      const decoded  = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 })
+      const decoded0 = Array.isArray(decoded) ? decoded[0] : decoded
+      imgBytes = new Uint8Array(await decoded0.arrayBuffer()); imgType = 'jpg'
     } else {
       const blob = await imageToBlob(file, 'PNG', 1)
+      if (!blob) throw new Error(`Failed to decode ${file.name} for PDF`)
       imgBytes = new Uint8Array(await blob.arrayBuffer()); imgType = 'png'
     }
     const embImg = imgType === 'jpg' ? await doc.embedJpg(imgBytes) : await doc.embedPng(imgBytes)
@@ -326,18 +474,39 @@ export async function pdfToImages(file, format, onProgress) {
   const mime = format === 'JPG' ? 'image/jpeg' : format === 'WEBP' ? 'image/webp' : 'image/png'
   const q = format === 'JPG' ? 0.92 : format === 'WEBP' ? 0.85 : 1
 
+  // Adaptive scale — target a sensible max width, clamp to 16 MP
+  const maxW = PDF_MAX_OUT_WIDTH[format] || 2048
+
   for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p)
-    const viewport = page.getViewport({ scale: 2.0 })
-    const canvas = document.createElement('canvas')
-    canvas.width = viewport.width; canvas.height = viewport.height
+    const page      = await pdf.getPage(p)
+    const naturalVp = page.getViewport({ scale: 1.0 })
+    let   scale     = Math.min(maxW / naturalVp.width, 4.0)
+    const projW = naturalVp.width  * scale
+    const projH = naturalVp.height * scale
+    if (projW * projH > MAX_CANVAS_PIXELS) {
+      scale *= Math.sqrt(MAX_CANVAS_PIXELS / (projW * projH))
+    }
+    const viewport = page.getViewport({ scale })
+    const canvas   = document.createElement('canvas')
+    canvas.width   = Math.round(viewport.width)
+    canvas.height  = Math.round(viewport.height)
     await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
-    const blob = await new Promise(r => canvas.toBlob(r, mime, q))
+    // BUG-10: guard against toBlob returning null under memory pressure
+    const blob = await new Promise((resolve, reject) =>
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error(`Page ${p} render failed`)), mime, q)
+    )
     blobs.push(blob)
+    // BUG-F: free canvas backing buffer immediately after extracting the blob
+    canvas.width = 0; canvas.height = 0
     onProgress?.(Math.round((p / pdf.numPages) * 100))
   }
   if (blobs.length === 1) return blobs[0]
-  return zipBlobs(blobs, format.toLowerCase())
+  // Multi-page result: pack into ZIP and tag so caller uses .zip extension
+  // BUG-16: pass source file's basename so pages are named <doc>_001.png, not file_001.png
+  const base = file.name.replace(/\.[^.]+$/, '')
+  const zipResult = await zipBlobs(blobs, format.toLowerCase(), base)
+  zipResult._actualExt = 'zip'
+  return zipResult
 }
 
 // ─── MERGE PDFs ──────────────────────────────────────────────
@@ -371,83 +540,125 @@ export async function pdfToZip(file, format, onProgress) {
   const extStr = format.toLowerCase()
   const base = file.name.replace(/\.[^.]+$/, '')
 
+  const maxW = PDF_MAX_OUT_WIDTH[format] || 2048
+
   for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p)
-    const viewport = page.getViewport({ scale: 2.0 })
-    const canvas = document.createElement('canvas')
-    canvas.width = viewport.width; canvas.height = viewport.height
+    const page      = await pdf.getPage(p)
+    const naturalVp = page.getViewport({ scale: 1.0 })
+    let   scale     = Math.min(maxW / naturalVp.width, 4.0)
+    const projW = naturalVp.width  * scale
+    const projH = naturalVp.height * scale
+    if (projW * projH > MAX_CANVAS_PIXELS) {
+      scale *= Math.sqrt(MAX_CANVAS_PIXELS / (projW * projH))
+    }
+    const viewport = page.getViewport({ scale })
+    const canvas   = document.createElement('canvas')
+    canvas.width   = Math.round(viewport.width)
+    canvas.height  = Math.round(viewport.height)
     await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
-    const blob = await new Promise(r => canvas.toBlob(r, mime, q))
+    // BUG-10: guard null toBlob
+    const blob = await new Promise((resolve, reject) =>
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error(`Page ${p} render failed`)), mime, q)
+    )
     zip.file(`${base}_page${String(p).padStart(3,'0')}.${extStr}`, blob)
+    // BUG-F: free canvas memory immediately
+    canvas.width = 0; canvas.height = 0
     onProgress?.(Math.round((p / pdf.numPages) * 90))
   }
   const zipBlob = await zip.generateAsync({ type:'blob', compression:'DEFLATE' })
+  // BUG-I: tag so callers know this is a ZIP regardless of the format requested
+  zipBlob._actualExt = 'zip'
   onProgress?.(100)
   return zipBlob
 }
 
 // ─── VIDEO / AUDIO (ffmpeg — auto-loaded silently) ───────────
-export async function convertAV(file, format, onProgress) {
-  const ff = await getFF(onProgress)
+// BUG-11: all three AV functions use try/finally so the progress listener
+// and temp files are always cleaned up, even when an error is thrown.
+// BUG-C: filenames include a timestamp so concurrent calls don't collide.
+export async function convertAV(file, format, onProgress, onEngineProgress) {
+  const ff = await getFF(onProgress, onEngineProgress)
   const { fetchFile } = await import('@ffmpeg/util')
+  const ts    = Date.now()
   const inExt = ext(file)
   const outExt = format.toLowerCase()
-  const inFile = `src.${inExt}`, outFile = `out.${outExt}`
+  const inFile = `src_${ts}.${inExt}`, outFile = `out_${ts}.${outExt}`
 
   const ph = ({ progress: p }) => onProgress?.(Math.min(99, Math.round(p * 100)))
   ff.on('progress', ph)
-  await ff.writeFile(inFile, await fetchFile(file))
-  await ff.exec(['-i', inFile, ...(FFMPEG_PRESETS[format] || []), '-y', outFile])
-  const data = await ff.readFile(outFile)
-  ff.off('progress', ph)
-  await ff.deleteFile(inFile).catch(() => {})
-  await ff.deleteFile(outFile).catch(() => {})
-  onProgress?.(100)
-  return new Blob([data.buffer], { type: MIME[format] || 'application/octet-stream' })
+  try {
+    await ff.writeFile(inFile, await fetchFile(file))
+    await ff.exec(['-i', inFile, ...(FFMPEG_PRESETS[format] || []), '-y', outFile])
+    const data = await ff.readFile(outFile)
+    onProgress?.(100)
+    return new Blob([data.buffer], { type: MIME[format] || 'application/octet-stream' })
+  } finally {
+    ff.off('progress', ph)
+    await ff.deleteFile(inFile).catch(() => {})
+    await ff.deleteFile(outFile).catch(() => {})
+  }
 }
 
 // ─── VIDEO → GIF ─────────────────────────────────────────────
-export async function videoToGIF(file, quality = 'medium', onProgress) {
-  const ff = await getFF(onProgress)
+export async function videoToGIF(file, quality = 'medium', onProgress, onEngineProgress) {
+  const ff = await getFF(onProgress, onEngineProgress)
   const { fetchFile } = await import('@ffmpeg/util')
-  const fps = { low:6, medium:12, high:20 }[quality] || 12
+  const fps   = { low:6, medium:12, high:20 }[quality] || 12
   const scale = { low:320, medium:480, high:640 }[quality] || 480
+  const ts    = Date.now()
   const inExt = ext(file)
-  const inFile = `gifin.${inExt}`, palette = 'pal.png', outFile = 'out.gif'
+  const inFile  = `gifin_${ts}.${inExt}`
+  const palette = `pal_${ts}.png`
+  const outFile = `gif_${ts}.gif`
 
   const ph = ({ progress: p }) => onProgress?.(Math.min(95, Math.round(p * 100)))
   ff.on('progress', ph)
-  await ff.writeFile(inFile, await fetchFile(file))
-  await ff.exec(['-i', inFile, '-vf', `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen=stats_mode=diff`, '-y', palette])
-  await ff.exec(['-i', inFile, '-i', palette, '-lavfi', `fps=${fps},scale=${scale}:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer`, '-y', outFile])
-  const data = await ff.readFile(outFile)
-  ff.off('progress', ph)
-  await ff.deleteFile(inFile).catch(() => {})
-  await ff.deleteFile(outFile).catch(() => {})
-  await ff.deleteFile(palette).catch(() => {})
-  onProgress?.(100)
-  return new Blob([data.buffer], { type:'image/gif' })
+  try {
+    await ff.writeFile(inFile, await fetchFile(file))
+    await ff.exec(['-i', inFile, '-vf', `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen=stats_mode=diff`, '-y', palette])
+    await ff.exec(['-i', inFile, '-i', palette, '-lavfi', `fps=${fps},scale=${scale}:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer`, '-y', outFile])
+    const data = await ff.readFile(outFile)
+    onProgress?.(100)
+    return new Blob([data.buffer], { type:'image/gif' })
+  } finally {
+    ff.off('progress', ph)
+    await ff.deleteFile(inFile).catch(() => {})
+    await ff.deleteFile(outFile).catch(() => {})
+    await ff.deleteFile(palette).catch(() => {})
+  }
 }
 
 // ─── EXTRACT AUDIO FROM VIDEO ────────────────────────────────
-export async function extractAudio(file, format, onProgress) {
-  const ff = await getFF(onProgress)
+export async function extractAudio(file, format, onProgress, onEngineProgress) {
+  const ff = await getFF(onProgress, onEngineProgress)
   const { fetchFile } = await import('@ffmpeg/util')
+  const ts    = Date.now()
   const inExt = ext(file)
   const outExt = format.toLowerCase()
-  const inFile = `vid.${inExt}`, outFile = `audio.${outExt}`
-  const presets = { MP3:FFMPEG_PRESETS.MP3, WAV:FFMPEG_PRESETS.WAV, AAC:FFMPEG_PRESETS.AAC, OGG:FFMPEG_PRESETS.OGG }
+  const inFile  = `vid_${ts}.${inExt}`, outFile = `audio_${ts}.${outExt}`
+  // BUG-B: include FLAC and M4A so they don't silently fall back to MP3
+  const presets = {
+    MP3:  FFMPEG_PRESETS.MP3,
+    WAV:  FFMPEG_PRESETS.WAV,
+    AAC:  FFMPEG_PRESETS.AAC,
+    OGG:  FFMPEG_PRESETS.OGG,
+    FLAC: FFMPEG_PRESETS.FLAC,
+    M4A:  FFMPEG_PRESETS.M4A,
+  }
 
   const ph = ({ progress: p }) => onProgress?.(Math.min(99, Math.round(p * 100)))
   ff.on('progress', ph)
-  await ff.writeFile(inFile, await fetchFile(file))
-  await ff.exec(['-i', inFile, ...(presets[format] || FFMPEG_PRESETS.MP3), '-vn', '-y', outFile])
-  const data = await ff.readFile(outFile)
-  ff.off('progress', ph)
-  await ff.deleteFile(inFile).catch(() => {})
-  await ff.deleteFile(outFile).catch(() => {})
-  onProgress?.(100)
-  return new Blob([data.buffer], { type: MIME[format] || 'audio/mpeg' })
+  try {
+    await ff.writeFile(inFile, await fetchFile(file))
+    await ff.exec(['-i', inFile, ...(presets[format] || FFMPEG_PRESETS.MP3), '-vn', '-y', outFile])
+    const data = await ff.readFile(outFile)
+    onProgress?.(100)
+    return new Blob([data.buffer], { type: MIME[format] || 'audio/mpeg' })
+  } finally {
+    ff.off('progress', ph)
+    await ff.deleteFile(inFile).catch(() => {})
+    await ff.deleteFile(outFile).catch(() => {})
+  }
 }
 
 // ─── ZIP BUNDLE ──────────────────────────────────────────────
@@ -473,15 +684,17 @@ export async function zipFiles(fileMap) {
 const AUDIO_FORMATS = new Set(['MP3','WAV','OGG','AAC','FLAC','M4A'])
 
 export async function convertFile(file, format, options = {}) {
-  const { quality = 85, resizeW, resizeH, gifQuality = 'medium', onProgress } = options
+  const { quality = 85, resizeW, resizeH, gifQuality = 'medium', onProgress, onEngineProgress } = options
   const cat = getCategory(file.name)
 
   if (cat === 'unknown') throw new Error(`Unsupported file format: .${ext(file)}`)
 
-  if (cat === 'heic')  return convertHEIC(file, format)
-  if (cat === 'svg')   return convertSVG(file, format)
+  // Issues #7 & #8: pass quality + resize through to HEIC and SVG converters
+  if (cat === 'heic')  return convertHEIC(file, format, quality, resizeW, resizeH)
+  if (cat === 'svg')   return convertSVG(file, format, quality, resizeW, resizeH)
   if (cat === 'image') {
-    if (format === 'ICO') return createICO(file)
+    // BUG-E: pass resizeW through so createICO can produce a custom-size icon
+    if (format === 'ICO') return createICO(file, resizeW)
     if (format === 'PDF') return singleImageToPDF(file)
     return convertImage(file, format, quality, resizeW, resizeH)
   }
@@ -490,11 +703,11 @@ export async function convertFile(file, format, options = {}) {
     return pdfToImages(file, format, onProgress)
   }
   if (cat === 'video') {
-    if (format === 'GIF') return videoToGIF(file, gifQuality, onProgress)
-    if (AUDIO_FORMATS.has(format)) return extractAudio(file, format, onProgress)
-    return convertAV(file, format, onProgress)
+    if (format === 'GIF') return videoToGIF(file, gifQuality, onProgress, onEngineProgress)
+    if (AUDIO_FORMATS.has(format)) return extractAudio(file, format, onProgress, onEngineProgress)
+    return convertAV(file, format, onProgress, onEngineProgress)
   }
-  if (cat === 'audio') return convertAV(file, format, onProgress)
+  if (cat === 'audio') return convertAV(file, format, onProgress, onEngineProgress)
 
   throw new Error(`No converter for .${ext(file)} → ${format}`)
 }

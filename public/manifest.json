@@ -1,0 +1,23 @@
+{
+  "name": "Filomer — Private File Converter & Compressor",
+  "short_name": "Filomer",
+  "description": "Convert and compress images, video, audio, and PDF 100% in your browser. Fast, free, and works offline.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0B1120",
+  "theme_color": "#2563EB",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

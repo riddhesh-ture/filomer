@@ -1,5 +1,5 @@
 // FileCard.jsx — compact thumbnail card with preparing/converting/done states
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import Chip from '@mui/material/Chip'
@@ -27,8 +27,7 @@ function formatBytes(b) {
   return `${(b / 1048576).toFixed(2)} MB`
 }
 
-export default function FileCard({ item, onRemove, onDownload, index = 0 }) {
-  const [preview, setPreview] = useState(null)
+export default function FileCard({ item, onRemove, onDownload, onRetry, index = 0 }) {
   const [hovered, setHovered] = useState(false)
 
   const cat    = item.category
@@ -38,12 +37,15 @@ export default function FileCard({ item, onRemove, onDownload, index = 0 }) {
   const isPrep = item.status === 'preparing'
   const isErr  = item.status === 'error'
 
-  useEffect(() => {
-    if (!['image', 'svg', 'heic'].includes(cat)) return
-    const url = URL.createObjectURL(item.file)
-    setPreview(url)
-    return () => URL.revokeObjectURL(url)
+  // Create a preview URL for image-family files; revoke when the file changes
+  const preview = useMemo(() => {
+    if (!['image', 'svg', 'heic'].includes(cat)) return null
+    return URL.createObjectURL(item.file)
   }, [item.file, cat])
+
+  useEffect(() => {
+    return () => { if (preview) URL.revokeObjectURL(preview) }
+  }, [preview])
 
   const reduction = isDone && item.blob
     ? Math.round((1 - item.blob.size / item.file.size) * 100)
@@ -59,29 +61,29 @@ export default function FileCard({ item, onRemove, onDownload, index = 0 }) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Corner X button — top-right "ear" */}
-      <Tooltip title="Remove file">
-        <IconButton
-          size="small"
-          onClick={e => { e.stopPropagation(); onRemove() }}
-          sx={{
-            position: 'absolute',
-            top: -9,
-            right: -9,
-            zIndex: 10,
-            width: 24,
-            height: 24,
-            bgcolor: hovered ? 'error.main' : 'action.hover',
-            color: hovered ? '#fff' : 'text.secondary',
-            border: '2px solid',
-            borderColor: 'background.default',
-            opacity: hovered ? 1 : 0.7,
-            transition: 'all 0.18s ease',
-            '&:hover': { bgcolor: 'error.dark', color: '#fff', transform: 'scale(1.15)' },
-          }}
-        >
-          <X size={11} strokeWidth={3} />
-        </IconButton>
+      {/* Corner X button — hidden while converting/preparing (Issue #4) */}
+      <Tooltip title={isConv || isPrep ? 'Cannot remove while converting' : 'Remove file'}>
+        <span style={{ position: 'absolute', top: -9, right: -9, zIndex: 10 }}>
+          <IconButton
+            size="small"
+            onClick={e => { e.stopPropagation(); onRemove() }}
+            disabled={isConv || isPrep}
+            sx={{
+              width: 24,
+              height: 24,
+              bgcolor: hovered && !(isConv || isPrep) ? 'error.main' : 'action.hover',
+              color: hovered && !(isConv || isPrep) ? '#fff' : 'text.secondary',
+              border: '2px solid',
+              borderColor: 'background.default',
+              opacity: (isConv || isPrep) ? 0 : hovered ? 1 : 0.7,
+              pointerEvents: (isConv || isPrep) ? 'none' : 'auto',
+              transition: 'all 0.18s ease',
+              '&:hover': { bgcolor: 'error.dark', color: '#fff', transform: 'scale(1.15)' },
+            }}
+          >
+            <X size={11} strokeWidth={3} />
+          </IconButton>
+        </span>
       </Tooltip>
 
       {/* Thumbnail area */}
@@ -116,13 +118,18 @@ export default function FileCard({ item, onRemove, onDownload, index = 0 }) {
           </Box>
         )}
 
-        {/* Preparing (loading ffmpeg silently) */}
+        {/* Preparing (loading ffmpeg silently or downloading engine) */}
         {isPrep && (
-          <Box sx={{ position: 'absolute', inset: 0, bgcolor: 'rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.75 }}>
-            <Loader size={28} color="#93C5FD" style={{ animation: 'spin 1.5s linear infinite' }} />
-            <Typography variant="caption" sx={{ color: '#93C5FD', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.6rem' }}>
-              Preparing…
+          <Box sx={{ position: 'absolute', inset: 0, bgcolor: 'rgba(0,0,0,0.75)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.75, px: 1 }}>
+            <Loader size={26} color="#93C5FD" style={{ animation: 'spin 1.5s linear infinite' }} />
+            <Typography variant="caption" sx={{ color: '#93C5FD', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.65rem', textAlign: 'center' }}>
+              {item.engineProgress ? `Engine ${item.engineProgress}%` : 'Preparing…'}
             </Typography>
+            {item.engineLoaded && item.engineTotal && (
+              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.75)', fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace" }}>
+                {(item.engineLoaded / 1048576).toFixed(1)} / {(item.engineTotal / 1048576).toFixed(1)} MB
+              </Typography>
+            )}
           </Box>
         )}
 
@@ -152,10 +159,30 @@ export default function FileCard({ item, onRemove, onDownload, index = 0 }) {
           </Box>
         )}
 
-        {/* Error */}
+        {/* Error — clickable to retry (Issue #3) */}
         {isErr && (
-          <Box sx={{ position: 'absolute', inset: 0, bgcolor: 'rgba(239,68,68,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <AlertCircle size={28} color="#EF4444" />
+          <Box
+            onClick={onRetry}
+            sx={{
+              position: 'absolute', inset: 0,
+              bgcolor: 'rgba(239,68,68,0.1)',
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center',
+              gap: 0.5,
+              cursor: onRetry ? 'pointer' : 'default',
+              transition: 'background-color 0.18s',
+              '&:hover': onRetry ? { bgcolor: 'rgba(239,68,68,0.2)' } : {},
+            }}
+          >
+            <AlertCircle size={24} color="#EF4444" />
+            {onRetry && (
+              <Typography
+                variant="caption"
+                sx={{ color: '#EF4444', fontWeight: 700, fontSize: '0.6rem', lineHeight: 1 }}
+              >
+                ↺ Retry
+              </Typography>
+            )}
           </Box>
         )}
 

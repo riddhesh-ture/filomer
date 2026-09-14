@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 // Toast.jsx — MUI Snackbar + Alert notification system
 import { useState, useCallback } from 'react'
 import Alert from '@mui/material/Alert'

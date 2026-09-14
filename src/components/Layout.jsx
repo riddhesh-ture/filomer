@@ -3,15 +3,17 @@
 //   Convert → blue/indigo     Compress → green/emerald
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useColorScheme } from '@mui/material/styles'
-import { useRef, useState, useLayoutEffect } from 'react'
+import { useRef, useState, useLayoutEffect, useEffect } from 'react'
 import AppBar from '@mui/material/AppBar'
 import Toolbar from '@mui/material/Toolbar'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
 import Container from '@mui/material/Container'
 import Tooltip from '@mui/material/Tooltip'
+import CircularProgress from '@mui/material/CircularProgress'
 import useMediaQuery from '@mui/material/useMediaQuery'
-import { Zap, MonitorDown, Sun, Moon } from 'lucide-react'
+import { Zap, MonitorDown, Sun, Moon, WifiOff, HardDriveDownload, Check } from 'lucide-react'
+import { isEngineCached, precacheEngine } from '../utils/ffmpegLoader.js'
 import ToastContainer from './Toast.jsx'
 
 // ─── Dynamic colour palettes ───────────────────────────────────
@@ -53,6 +55,25 @@ const PALETTES = {
     brandGlow: '0 0 16px rgba(16, 185, 129, 0.4)',
     brandGradient: 'linear-gradient(135deg, #059669, #06B6D4)',
     brandShadow: '0 2px 10px rgba(16, 185, 129, 0.25)',
+  },
+  // PDF Studio pane — red / rose
+  pdf: {
+    main:      '#EF4444',
+    dark:      '#DC2626',
+    secondary: '#F43F5E',
+    rgb:       '239,68,68',
+    gradient:  'linear-gradient(135deg, #EF4444, #F43F5E)',
+    gradientFaint: {
+      dark:  'linear-gradient(135deg, rgba(239,68,68,0.25), rgba(244,63,94,0.20))',
+      light: 'linear-gradient(135deg, rgba(220,38,38,0.12), rgba(244,63,94,0.10))',
+    },
+    border: { dark: 'rgba(239,68,68,0.30)', light: 'rgba(239,68,68,0.20)' },
+    glow:   { dark: '0 1px 8px rgba(239,68,68,0.15)', light: '0 1px 4px rgba(239,68,68,0.08)' },
+    dot:    { dark: '0 0 6px rgba(239,68,68,0.5)', light: '0 0 6px rgba(239,68,68,0.4)' },
+    shadow: '0 2px 8px rgba(239,68,68,0.4)',
+    brandGlow: '0 0 16px rgba(239, 68, 68, 0.4)',
+    brandGradient: 'linear-gradient(135deg, #DC2626, #F43F5E)',
+    brandShadow: '0 2px 10px rgba(239, 68, 68, 0.25)',
   },
 }
 
@@ -158,14 +179,15 @@ function NavPills({ value, onChange, isMobile }) {
   }, [])
 
   const tabs = [
-    { label: 'Convert',  pal: PALETTES.convert },
-    { label: 'Compress', pal: PALETTES.compress },
+    { label: 'Convert',    pal: PALETTES.convert },
+    { label: 'Compress',   pal: PALETTES.compress },
+    { label: 'PDF Studio', pal: PALETTES.pdf },
   ]
-  const activePal = tabs[value].pal
+  const activePal = tabs[value]?.pal || PALETTES.convert
 
   // ── Comet around ACTIVE TAB only ─────────────────────────────
-  // Active tab = half the pill width minus padding, full height minus padding
-  const activeW = dims.w > 0 ? dims.w / 2 - 3 : 0
+  const tabCount = tabs.length
+  const activeW = dims.w > 0 ? dims.w / tabCount - 3 : 0
   const activeH = dims.h > 0 ? dims.h - 6 : 0
   const activeR = Math.max(activeH / 2 - 1, 0)  // fully rounded
   const activePerimeter = activeW && activeH
@@ -175,9 +197,10 @@ function NavPills({ value, onChange, isMobile }) {
   const arcLen   = PATH_LEN * 0.30   // 30% arc — good comet tail length
   const arcGap   = PATH_LEN - arcLen
 
-  const cometClass = value === 0 ? 'pill-comet pill-comet--convert'
-                                 : 'pill-comet pill-comet--compress'
-  const cometColor = value === 0 ? '#3B82F6' : '#10B981'
+  const cometClass = value === 2 ? 'pill-comet pill-comet--pdf'
+                   : value === 1 ? 'pill-comet pill-comet--compress'
+                   : 'pill-comet pill-comet--convert'
+  const cometColor = value === 2 ? '#EF4444' : value === 1 ? '#10B981' : '#3B82F6'
 
   return (
     <Box
@@ -207,8 +230,8 @@ function NavPills({ value, onChange, isMobile }) {
         sx={{
           position: 'absolute',
           top: 3,
-          left: value === 0 ? 3 : '50%',
-          width: 'calc(50% - 3px)',
+          left: `calc(${(value * 100) / tabCount}% + 1.5px)`,
+          width: `calc(${100 / tabCount}% - 3px)`,
           height: 'calc(100% - 6px)',
           borderRadius: 99,
           background: (t) =>
@@ -227,8 +250,8 @@ function NavPills({ value, onChange, isMobile }) {
           sx={{
             position: 'absolute',
             top: 3,
-            left: value === 0 ? 3 : '50%',
-            width: 'calc(50% - 3px)',
+            left: `calc(${(value * 100) / tabCount}% + 1.5px)`,
+            width: `calc(${100 / tabCount}% - 3px)`,
             height: 'calc(100% - 6px)',
             pointerEvents: 'none',
             overflow: 'visible',
@@ -314,11 +337,49 @@ export default function Layout({
   const navigate = useNavigate()
   const isMobile = useMediaQuery('(max-width:600px)')
 
-  const tabValue = location.pathname.startsWith('/compress') ? 1 : 0
-  const pal = tabValue === 0 ? PALETTES.convert : PALETTES.compress
+  const [isOffline, setIsOffline] = useState(!navigator.onLine)
+  const [engineCached, setEngineCached] = useState(false)
+  const [downloadingEngine, setDownloadingEngine] = useState(false)
+  const [enginePct, setEnginePct] = useState(0)
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false)
+    const handleOffline = () => setIsOffline(true)
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    isEngineCached().then(setEngineCached)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+
+  const handlePrecache = async () => {
+    if (downloadingEngine || engineCached) return
+    setDownloadingEngine(true)
+    try {
+      await precacheEngine(p => {
+        if (!p.fromCache) setEnginePct(p.percent)
+      })
+      setEngineCached(true)
+    } catch (err) {
+      console.warn('[filomer] Precache failed:', err)
+    } finally {
+      setDownloadingEngine(false)
+    }
+  }
+
+  const tabValue = location.pathname.startsWith('/pdf')
+    ? 2
+    : location.pathname.startsWith('/compress')
+    ? 1
+    : 0
+  const pal = tabValue === 2 ? PALETTES.pdf : tabValue === 1 ? PALETTES.compress : PALETTES.convert
 
   const handleTabChange = (newValue) => {
-    navigate(newValue === 1 ? '/compress' : '/convert')
+    if (newValue === 2) navigate('/pdf')
+    else if (newValue === 1) navigate('/compress')
+    else navigate('/convert')
   }
 
   return (
@@ -421,6 +482,85 @@ export default function Layout({
 
             {/* Spacer pushes right-side items to the end */}
             <Box sx={{ flex: 1 }} />
+
+            {/* Offline indicator */}
+            {isOffline && (
+              <Tooltip title="You are running completely offline. All conversions stay on your device.">
+                <Box
+                  sx={{
+                    display: { xs: 'none', md: 'flex' },
+                    alignItems: 'center',
+                    gap: 0.6,
+                    px: 1.25,
+                    py: 0.5,
+                    borderRadius: 99,
+                    bgcolor: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.25)',
+                    color: '#EF4444',
+                    cursor: 'default',
+                  }}
+                >
+                  <WifiOff size={13} />
+                  <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.75rem' }}>
+                    Offline
+                  </Typography>
+                </Box>
+              </Tooltip>
+            )}
+
+            {/* Offline Engine status / Precache action */}
+            <Tooltip
+              title={
+                engineCached
+                  ? 'Video & Audio engine is cached on your device — ready for 100% offline use!'
+                  : 'Download Video & Audio engine (~31 MB) to your device for offline use'
+              }
+            >
+              <Box
+                onClick={!engineCached ? handlePrecache : undefined}
+                sx={{
+                  display: { xs: 'none', md: 'flex' },
+                  alignItems: 'center',
+                  gap: 0.6,
+                  px: 1.25,
+                  py: 0.5,
+                  borderRadius: 99,
+                  cursor: engineCached ? 'default' : 'pointer',
+                  bgcolor: engineCached ? 'rgba(16, 185, 129, 0.08)' : 'action.hover',
+                  border: '1px solid',
+                  borderColor: engineCached ? 'rgba(16, 185, 129, 0.25)' : 'divider',
+                  color: engineCached ? '#10B981' : 'text.secondary',
+                  transition: 'all 0.25s ease',
+                  '&:hover': {
+                    borderColor: engineCached ? 'rgba(16, 185, 129, 0.4)' : pal.main,
+                    color: engineCached ? '#10B981' : pal.main,
+                  },
+                }}
+              >
+                {downloadingEngine ? (
+                  <>
+                    <CircularProgress size={12} thickness={5} sx={{ color: pal.main }} />
+                    <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.75rem' }}>
+                      {enginePct}%
+                    </Typography>
+                  </>
+                ) : engineCached ? (
+                  <>
+                    <Check size={13} strokeWidth={2.5} />
+                    <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.75rem' }}>
+                      Offline Engine
+                    </Typography>
+                  </>
+                ) : (
+                  <>
+                    <HardDriveDownload size={13} />
+                    <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.75rem' }}>
+                      Cache Engine
+                    </Typography>
+                  </>
+                )}
+              </Box>
+            </Tooltip>
 
             {/* Install button */}
             {isInstallable && !isInstalled && (

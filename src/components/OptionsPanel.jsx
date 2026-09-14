@@ -13,7 +13,9 @@ import TextField from '@mui/material/TextField'
 import Divider from '@mui/material/Divider'
 import CircularProgress from '@mui/material/CircularProgress'
 import Tooltip from '@mui/material/Tooltip'
-import { Zap, X, Download, ChevronDown, ChevronUp, Settings2, MonitorDown, Check } from 'lucide-react'
+import { Zap, X, Download, ChevronDown, ChevronUp, Settings2, MonitorDown, Check, GitMerge, RotateCcw } from 'lucide-react'
+import FormControlLabel from '@mui/material/FormControlLabel'
+import Checkbox from '@mui/material/Checkbox'
 import { FORMAT_OPTIONS } from '../conversionEngine.js'
 
 export default function OptionsPanel({
@@ -35,6 +37,14 @@ export default function OptionsPanel({
   isInstallable = false,
   isInstalled = false,
   onInstall,
+  // Fix #6: batch mode props
+  combineImages = false,
+  onCombineImages,
+  isMerging = false,
+  onMergePDFs,
+  // Issue #3: retry props
+  errorCount = 0,
+  onRetryFailed,
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
@@ -42,6 +52,10 @@ export default function OptionsPanel({
   const canResize = ['image', 'svg', 'heic'].includes(category)
   const showQuality =
     canResize && !['PNG', 'GIF', 'BMP', 'ICO', 'PDF'].includes(outputFormat)
+
+  // Fix #6: show batch controls when applicable
+  const showCombineToggle = category === 'image' && outputFormat === 'PDF' && totalCount > 1
+  const showMergePDFs     = category === 'pdf' && totalCount > 1
 
   return (
     <Paper
@@ -89,11 +103,13 @@ export default function OptionsPanel({
         >
           Output Format
         </Typography>
+        {/* Issue #6: disabled while conversion is running to prevent settings drift */}
         <Select
           value={outputFormat}
           onChange={e => onFormatChange(e.target.value)}
           size="small"
           fullWidth
+          disabled={isRunning}
           sx={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '0.9rem' }}
         >
           {formats.map(f => (
@@ -156,6 +172,7 @@ export default function OptionsPanel({
                   max={100}
                   step={5}
                   size="small"
+                  disabled={isRunning}
                 />
               </Box>
             )}
@@ -184,6 +201,7 @@ export default function OptionsPanel({
                     value={resizeW}
                     onChange={e => onResizeChange('w', e.target.value)}
                     size="small"
+                    disabled={isRunning}
                     sx={{ flex: 1 }}
                     slotProps={{ htmlInput: { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: '0.8125rem' }, min: 1 } }}
                   />
@@ -193,6 +211,7 @@ export default function OptionsPanel({
                     value={resizeH}
                     onChange={e => onResizeChange('h', e.target.value)}
                     size="small"
+                    disabled={isRunning}
                     sx={{ flex: 1 }}
                     slotProps={{ htmlInput: { style: { fontFamily: "'JetBrains Mono', monospace", fontSize: '0.8125rem' }, min: 1 } }}
                   />
@@ -207,6 +226,44 @@ export default function OptionsPanel({
 
       {/* ── Action buttons ───────────────────────────── */}
       <Stack spacing={1}>
+        {/* Fix #6: Merge PDFs button (PDF category, 2+ files) */}
+        {showMergePDFs && (
+          <>
+            <Button
+              variant="contained"
+              color="secondary"
+              fullWidth
+              startIcon={isMerging ? <CircularProgress size={14} thickness={4} sx={{ color: 'inherit' }} /> : <GitMerge size={15} />}
+              onClick={onMergePDFs}
+              disabled={isMerging || isRunning}
+              sx={{ py: 1.25, borderRadius: 2, fontWeight: 700 }}
+            >
+              {isMerging ? 'Merging…' : `Merge ${totalCount} PDFs`}
+            </Button>
+            <Divider />
+          </>
+        )}
+
+        {/* Fix #6: Combine images checkbox */}
+        {showCombineToggle && (
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={combineImages}
+                onChange={e => onCombineImages?.(e.target.checked)}
+                size="small"
+                color="primary"
+              />
+            }
+            label={
+              <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.75rem' }}>
+                Combine into single PDF
+              </Typography>
+            }
+            sx={{ mx: 0, mb: -0.5 }}
+          />
+        )}
+
         {readyCount > 0 && !isRunning && (
           <Button
             variant="contained"
@@ -215,7 +272,10 @@ export default function OptionsPanel({
             onClick={onConvert}
             sx={{ py: 1.25, borderRadius: 2, fontWeight: 700 }}
           >
-            Convert {readyCount} file{readyCount !== 1 ? 's' : ''}
+            {combineImages && showCombineToggle
+              ? `Combine ${readyCount} images → PDF`
+              : `Convert ${readyCount} file${readyCount !== 1 ? 's' : ''}`
+            }
           </Button>
         )}
 
@@ -244,10 +304,26 @@ export default function OptionsPanel({
           </Button>
         )}
 
+        {/* Issue #3: retry failed files */}
+        {errorCount > 0 && !isRunning && (
+          <Button
+            variant="outlined"
+            color="error"
+            fullWidth
+            startIcon={<RotateCcw size={14} />}
+            onClick={onRetryFailed}
+            sx={{ py: 0.875, borderRadius: 2, fontWeight: 600, fontSize: '0.8rem' }}
+          >
+            Retry {errorCount} failed
+          </Button>
+        )}
+
+        {/* Issue #4: disabled while running to prevent clearing an active queue */}
         <Button
           variant="text"
           color="inherit"
           fullWidth
+          disabled={isRunning}
           startIcon={<X size={13} />}
           onClick={onClear}
           sx={{ color: 'text.secondary', py: 0.75, borderRadius: 2, fontSize: '0.8rem' }}

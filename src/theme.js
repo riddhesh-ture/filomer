@@ -4,7 +4,7 @@
 //  Uses colorSchemes + CSS variables for dark mode toggle
 // ══════════════════════════════════════════════════════════════
 
-import { createTheme, alpha } from '@mui/material/styles';
+import { createTheme } from '@mui/material/styles';
 
 // ─── Category colors for file types ────────────────────────────
 export const categoryColors = {

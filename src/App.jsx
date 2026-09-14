@@ -4,6 +4,7 @@ import CssBaseline from '@mui/material/CssBaseline'
 import theme from './theme.js'
 import FileConverter from './FileConverter.jsx'
 import Compressor from './Compressor.jsx'
+import PdfWorkbench from './components/pdf/PdfWorkbench.jsx'
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
         <Routes>
           <Route path="/convert" element={<FileConverter />} />
           <Route path="/compress" element={<Compressor />} />
+          <Route path="/pdf" element={<PdfWorkbench />} />
           <Route path="*" element={<Navigate to="/convert" replace />} />
         </Routes>
       </BrowserRouter>

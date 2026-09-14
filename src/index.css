@@ -77,6 +77,12 @@
     drop-shadow(0 0 7px rgba(16, 185, 129, 0.45));
 }
 
+.pill-comet--pdf {
+  filter:
+    drop-shadow(0 0 3px rgba(239, 68, 68, 0.90))
+    drop-shadow(0 0 7px rgba(239, 68, 68, 0.45));
+}
+
 @keyframes pillCometSweep {
   0%   { stroke-dashoffset: 0; opacity: 0.90; }
   80%  { opacity: 0.90; }
